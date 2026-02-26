@@ -17,6 +17,7 @@ import {
   getUploadsPath,
   saveSessionId,
 } from "../../user/setup.js";
+import { isCorruptedSessionError } from "../sessionRecovery.js";
 
 const execAsync = promisify(exec);
 
@@ -75,6 +76,12 @@ export async function voiceHandler(ctx: Context): Promise<void> {
 
     const fileUrl = `https://api.telegram.org/file/bot${config.telegram.botToken}/${filePath}`;
     const response = await fetch(fileUrl);
+    if (!response.ok) {
+      await ctx.reply(
+        `Failed to download voice message from Telegram (HTTP ${response.status}).`,
+      );
+      return;
+    }
     const buffer = Buffer.from(await response.arrayBuffer());
 
     // Save original OGA file
@@ -167,7 +174,7 @@ export async function voiceHandler(ctx: Context): Promise<void> {
       { transcription: transcription.text },
       "Executing Claude query",
     );
-    const result = await executeClaudeQuery({
+    let result = await executeClaudeQuery({
       prompt: transcription.text,
       userDir,
       downloadsPath,
@@ -182,9 +189,25 @@ export async function voiceHandler(ctx: Context): Promise<void> {
       // Ignore delete errors
     }
 
+    // Auto-recover from corrupted sessions
+    if (!result.success && sessionId && isCorruptedSessionError(result.error)) {
+      logger.warn(
+        { sessionId, error: result.error },
+        "Corrupted session detected in voice handler — clearing and retrying",
+      );
+      await saveSessionId(userDir, null);
+      result = await executeClaudeQuery({
+        prompt: transcription.text,
+        userDir,
+        downloadsPath,
+        sessionId: null,
+        onProgress,
+      });
+    }
+
     const parsed = parseClaudeOutput(result);
 
-    if (parsed.sessionId) {
+    if (parsed.sessionId && !isCorruptedSessionError(result.error)) {
       await saveSessionId(userDir, parsed.sessionId);
     }
 

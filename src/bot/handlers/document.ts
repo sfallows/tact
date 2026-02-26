@@ -14,6 +14,7 @@ import {
   getUploadsPath,
   saveSessionId,
 } from "../../user/setup.js";
+import { isCorruptedSessionError } from "../sessionRecovery.js";
 
 const SUPPORTED_MIME_TYPES = [
   "application/pdf",
@@ -98,6 +99,12 @@ export async function documentHandler(ctx: Context): Promise<void> {
 
     const fileUrl = `https://api.telegram.org/file/bot${config.telegram.botToken}/${filePath}`;
     const response = await fetch(fileUrl);
+    if (!response.ok) {
+      await ctx.reply(
+        `Failed to download file from Telegram (HTTP ${response.status}).`,
+      );
+      return;
+    }
     const buffer = Buffer.from(await response.arrayBuffer());
 
     const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -137,7 +144,7 @@ export async function documentHandler(ctx: Context): Promise<void> {
     const downloadsPath = getDownloadsPath(userDir);
 
     logger.debug("Executing Claude query with document");
-    const result = await executeClaudeQuery({
+    let result = await executeClaudeQuery({
       prompt,
       userDir,
       downloadsPath,
@@ -151,9 +158,25 @@ export async function documentHandler(ctx: Context): Promise<void> {
       // Ignore delete errors
     }
 
+    // Auto-recover from corrupted sessions
+    if (!result.success && sessionId && isCorruptedSessionError(result.error)) {
+      logger.warn(
+        { sessionId, error: result.error },
+        "Corrupted session detected in document handler — clearing and retrying",
+      );
+      await saveSessionId(userDir, null);
+      result = await executeClaudeQuery({
+        prompt,
+        userDir,
+        downloadsPath,
+        sessionId: null,
+        onProgress,
+      });
+    }
+
     const parsed = parseClaudeOutput(result);
 
-    if (parsed.sessionId) {
+    if (parsed.sessionId && !isCorruptedSessionError(result.error)) {
       await saveSessionId(userDir, parsed.sessionId);
     }
 

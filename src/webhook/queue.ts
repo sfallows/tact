@@ -22,6 +22,7 @@ export interface WebhookQueueItem {
   notify: boolean;
   timestamp: number;
   status: "pending" | "processing";
+  retries: number;
 }
 
 interface EnqueueResult {
@@ -35,6 +36,8 @@ interface EnqueueResult {
 const QUEUE_FILENAME = "webhook-queue.json";
 const MAX_QUEUE_DEPTH = 50;
 const POLL_INTERVAL_MS = 12_000;
+const ITEM_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const MAX_RETRIES = 3;
 
 // --- Module state ---
 
@@ -70,7 +73,15 @@ async function readQueue(): Promise<WebhookQueueItem[]> {
   try {
     const data = await readFile(path, "utf-8");
     return JSON.parse(data) as WebhookQueueItem[];
-  } catch {
+  } catch (err) {
+    // Log if file exists but failed to parse (corruption)
+    if (existsSync(path)) {
+      const logger = getLogger();
+      logger.warn(
+        { error: err, path },
+        "Queue file exists but failed to parse — treating as empty",
+      );
+    }
     return [];
   }
 }
@@ -134,6 +145,7 @@ export function enqueue(
       notify,
       timestamp: Date.now(),
       status: "pending",
+      retries: 0,
     };
 
     queue.push(item);
@@ -159,14 +171,37 @@ export async function drainQueue(): Promise<boolean> {
     return false;
   }
 
-  // Claim next item under lock (read-modify-write is atomic)
+  // Claim next pending item under lock; also prune expired items
   const claimed = await withFileLock(async () => {
     const queue = await readQueue();
-    const nextItem = queue.find((item) => item.status === "pending");
-    if (!nextItem) return null;
+    const now = Date.now();
+    let changed = false;
+
+    // Remove expired items (TTL exceeded)
+    const active: WebhookQueueItem[] = [];
+    for (const item of queue) {
+      if (now - item.timestamp > ITEM_TTL_MS && item.status === "pending") {
+        logger.warn(
+          {
+            queueId: item.id,
+            ageMin: Math.round((now - item.timestamp) / 60000),
+          },
+          "Dropping expired queue item (TTL exceeded)",
+        );
+        changed = true;
+      } else {
+        active.push(item);
+      }
+    }
+
+    const nextItem = active.find((item) => item.status === "pending");
+    if (!nextItem) {
+      if (changed) await writeQueue(active);
+      return null;
+    }
 
     nextItem.status = "processing";
-    await writeQueue(queue);
+    await writeQueue(active);
     return nextItem;
   });
 
@@ -176,7 +211,7 @@ export async function drainQueue(): Promise<boolean> {
 
   try {
     logger.info(
-      { queueId: claimed.id, notify: claimed.notify },
+      { queueId: claimed.id, notify: claimed.notify, retries: claimed.retries },
       "Processing queued webhook",
     );
 
@@ -201,6 +236,7 @@ export async function drainQueue(): Promise<boolean> {
     }
 
     // Send to Telegram if notify
+    let sendFailed = false;
     if (claimed.notify && botInstance && result.output) {
       try {
         const text = result.success
@@ -211,11 +247,39 @@ export async function drainQueue(): Promise<boolean> {
           await botInstance.api.sendMessage(primaryUserId, chunk);
         }
       } catch (err) {
+        sendFailed = true;
         logger.error(
           { error: err, queueId: claimed.id },
           "Failed to send queued result to Telegram",
         );
       }
+    }
+
+    // If Telegram send failed, requeue for retry (keep the Claude result logged)
+    if (sendFailed) {
+      await withFileLock(async () => {
+        const updatedQueue = await readQueue();
+        const item = updatedQueue.find((i) => i.id === claimed.id);
+        if (item) {
+          item.retries = (item.retries || 0) + 1;
+          if (item.retries >= MAX_RETRIES) {
+            logger.error(
+              { queueId: claimed.id, retries: item.retries },
+              "Webhook item failed after max retries — dropping",
+            );
+            const filtered = updatedQueue.filter((i) => i.id !== claimed.id);
+            await writeQueue(filtered);
+          } else {
+            item.status = "pending";
+            await writeQueue(updatedQueue);
+            logger.warn(
+              { queueId: claimed.id, retries: item.retries },
+              "Requeued webhook item for retry",
+            );
+          }
+        }
+      });
+      return true;
     }
 
     // Remove processed item under lock
@@ -237,12 +301,42 @@ export async function drainQueue(): Promise<boolean> {
       "Error processing queued webhook",
     );
 
-    // Remove failed item under lock
+    // Retry on failure instead of dropping
     await withFileLock(async () => {
-      const updatedQueue = (await readQueue()).filter(
-        (i) => i.id !== claimed.id,
-      );
-      await writeQueue(updatedQueue);
+      const updatedQueue = await readQueue();
+      const item = updatedQueue.find((i) => i.id === claimed.id);
+      if (item) {
+        item.retries = (item.retries || 0) + 1;
+        if (item.retries >= MAX_RETRIES) {
+          logger.error(
+            { queueId: claimed.id, retries: item.retries },
+            "Webhook item failed after max retries — dropping",
+          );
+          // Notify via Telegram that a webhook was permanently lost
+          if (botInstance) {
+            const config = getConfig();
+            const primaryUserId = config.access.allowedUserIds[0];
+            try {
+              const preview = claimed.message.slice(0, 100);
+              await botInstance.api.sendMessage(
+                primaryUserId,
+                `\u26a0\ufe0f Webhook message failed after ${MAX_RETRIES} retries and was dropped:\n\n${preview}...`,
+              );
+            } catch {
+              // Can't notify — just log
+            }
+          }
+          const filtered = updatedQueue.filter((i) => i.id !== claimed.id);
+          await writeQueue(filtered);
+        } else {
+          item.status = "pending";
+          await writeQueue(updatedQueue);
+          logger.warn(
+            { queueId: claimed.id, retries: item.retries },
+            "Requeued failed webhook item for retry",
+          );
+        }
+      }
     });
 
     return false;

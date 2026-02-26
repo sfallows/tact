@@ -14,6 +14,7 @@ import {
 } from "../../user/setup.js";
 import { drainAll } from "../../webhook/queue.js";
 import { bufferMessage } from "../messageBuffer.js";
+import { isCorruptedSessionError } from "../sessionRecovery.js";
 
 // Heartbeat file path — written on message receive and reply (lazy init)
 let _heartbeatPath: string | null = null;
@@ -178,7 +179,7 @@ export async function processMessage(
     const downloadsPath = getDownloadsPath(userDir);
 
     logger.debug("Executing Claude query");
-    const result = await executeClaudeQuery({
+    let result = await executeClaudeQuery({
       prompt: promptText,
       userDir,
       downloadsPath,
@@ -195,6 +196,48 @@ export async function processMessage(
       "Claude result",
     );
 
+    // Auto-recover from corrupted sessions: clear session and retry once
+    if (!result.success && sessionId && isCorruptedSessionError(result.error)) {
+      logger.warn(
+        { sessionId, error: result.error },
+        "Corrupted session detected — clearing and retrying",
+      );
+      await saveSessionId(userDir, null);
+
+      // Update status message to inform user
+      try {
+        await ctx.api.editMessageText(
+          chatId,
+          statusMsgId,
+          "_Session reset, retrying..._",
+          { parse_mode: "Markdown" },
+        );
+      } catch {
+        // Ignore edit errors
+      }
+
+      // Reset streaming state for retry
+      streamedText = "";
+      lastStreamUpdate = 0;
+      streamUpdatePending = false;
+      isInToolUse = false;
+      lastProgressUpdate = Date.now();
+      lastProgressText = "";
+
+      result = await executeClaudeQuery({
+        prompt: promptText,
+        userDir,
+        downloadsPath,
+        sessionId: null,
+        onProgress,
+        onTextChunk,
+      });
+      logger.info(
+        { success: result.success, newSessionId: result.sessionId },
+        "Retry after session reset",
+      );
+    }
+
     // Delete the streaming status message — we'll send the final response as a new message
     try {
       await ctx.api.deleteMessage(chatId, statusMsgId);
@@ -202,7 +245,8 @@ export async function processMessage(
       // Ignore delete errors
     }
 
-    if (result.sessionId) {
+    // Only save session if the result was successful (don't persist corrupted sessions)
+    if (result.sessionId && !isCorruptedSessionError(result.error)) {
       await saveSessionId(userDir, result.sessionId);
       logger.debug({ sessionId: result.sessionId }, "Session saved");
     }

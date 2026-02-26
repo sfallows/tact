@@ -63,7 +63,7 @@ export function getDownloadsPath(userDir: string): string {
  */
 export async function saveSessionId(
   userDir: string,
-  sessionId: string,
+  sessionId: string | null,
 ): Promise<void> {
   const sessionFile = join(userDir, "session.json");
   const sessionData: SessionData = { currentSessionId: sessionId };

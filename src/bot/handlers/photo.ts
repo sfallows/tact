@@ -14,6 +14,7 @@ import {
   getUploadsPath,
   saveSessionId,
 } from "../../user/setup.js";
+import { isCorruptedSessionError } from "../sessionRecovery.js";
 
 /**
  * Handle photo messages
@@ -48,6 +49,12 @@ export async function photoHandler(ctx: Context): Promise<void> {
 
     const fileUrl = `https://api.telegram.org/file/bot${config.telegram.botToken}/${filePath}`;
     const response = await fetch(fileUrl);
+    if (!response.ok) {
+      await ctx.reply(
+        `Failed to download image from Telegram (HTTP ${response.status}).`,
+      );
+      return;
+    }
     const buffer = Buffer.from(await response.arrayBuffer());
 
     const ext = filePath.split(".").pop() || "jpg";
@@ -88,7 +95,7 @@ export async function photoHandler(ctx: Context): Promise<void> {
     const downloadsPath = getDownloadsPath(userDir);
 
     logger.debug("Executing Claude query with image");
-    const result = await executeClaudeQuery({
+    let result = await executeClaudeQuery({
       prompt,
       userDir,
       downloadsPath,
@@ -102,9 +109,25 @@ export async function photoHandler(ctx: Context): Promise<void> {
       // Ignore delete errors
     }
 
+    // Auto-recover from corrupted sessions
+    if (!result.success && sessionId && isCorruptedSessionError(result.error)) {
+      logger.warn(
+        { sessionId, error: result.error },
+        "Corrupted session detected in photo handler — clearing and retrying",
+      );
+      await saveSessionId(userDir, null);
+      result = await executeClaudeQuery({
+        prompt,
+        userDir,
+        downloadsPath,
+        sessionId: null,
+        onProgress,
+      });
+    }
+
     const parsed = parseClaudeOutput(result);
 
-    if (parsed.sessionId) {
+    if (parsed.sessionId && !isCorruptedSessionError(result.error)) {
       await saveSessionId(userDir, parsed.sessionId);
     }
 

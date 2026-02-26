@@ -92,7 +92,11 @@ export async function sendChunkedResponse(
         await ctx.reply(chunk);
       } catch (_error) {
         // Last resort: send error message
-        await ctx.reply(`Error sending message part ${i + 1}`);
+        try {
+          await ctx.reply(`Error sending message part ${i + 1}`);
+        } catch {
+          // Telegram completely unreachable — nothing we can do
+        }
       }
     }
 
