@@ -4,6 +4,7 @@ import type { Context } from "grammy";
 import { executeClaudeQuery } from "../../claude/executor.js";
 import { getConfig, getWorkingDirectory } from "../../config.js";
 import { getLogger } from "../../logger.js";
+import { drainAllNotifications } from "../../notification/queue.js";
 import { sendChunkedResponse } from "../../telegram/chunker.js";
 import { sendDownloadFiles } from "../../telegram/fileSender.js";
 import {
@@ -278,6 +279,16 @@ export async function processMessage(
       logger.error(
         { error: drainErr },
         "Error draining webhook queue after message",
+      );
+    }
+
+    // Drain any queued notifications now that Claude is idle
+    try {
+      await drainAllNotifications();
+    } catch (drainErr) {
+      logger.error(
+        { error: drainErr },
+        "Error draining notification queue after message",
       );
     }
   } catch (error) {

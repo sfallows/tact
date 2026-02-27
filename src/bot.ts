@@ -15,6 +15,10 @@ import { authMiddleware } from "./bot/middleware/auth.js";
 import { rateLimitMiddleware } from "./bot/middleware/rateLimit.js";
 import { getConfig, getWorkingDirectory } from "./config.js";
 import { getLogger, initLogger } from "./logger.js";
+import {
+  startNotificationPoller,
+  stopNotificationPoller,
+} from "./notification/queue.js";
 import { startQueuePoller, stopQueuePoller } from "./webhook/queue.js";
 import { startWebhookServer } from "./webhook/server.js";
 
@@ -103,6 +107,7 @@ export async function startBot(): Promise<void> {
   async function shutdown(signal: string): Promise<void> {
     logger.info({ signal }, "Received shutdown signal");
     stopQueuePoller();
+    stopNotificationPoller();
     await bot.stop();
     logger.info("Bot stopped");
     process.exit(0);
@@ -116,6 +121,9 @@ export async function startBot(): Promise<void> {
 
   // Start queue poller for processing queued webhooks
   await startQueuePoller(bot);
+
+  // Start notification queue poller (SQLite-backed outbound messages)
+  await startNotificationPoller(bot);
 
   // Register bot commands with Telegram (shows autocomplete menu)
   try {
