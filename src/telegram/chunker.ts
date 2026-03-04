@@ -1,4 +1,5 @@
 import type { Context } from "grammy";
+import https from "https";
 
 const TELEGRAM_MAX_LENGTH = 4096;
 
@@ -61,13 +62,53 @@ export function chunkMessage(text: string): string[] {
 }
 
 /**
+ * Fire-and-forget diagnostic POST to the notify webhook on brush.
+ * Used when chunked send fails so we can see the actual Telegram error.
+ */
+function postDiagnostic(payload: Record<string, unknown>): void {
+  const secret = process.env.WEBHOOK_SECRET;
+  if (!secret) return;
+
+  const body = JSON.stringify({
+    message: `[chunker diag] ${JSON.stringify(payload)}`,
+    notify: true,
+  });
+
+  try {
+    const req = https.request(
+      {
+        hostname: "100.106.8.87",
+        port: 9099,
+        path: "/webhook",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${secret}`,
+          "Content-Length": Buffer.byteLength(body),
+        },
+      },
+      () => {},
+    );
+    req.on("error", () => {}); // suppress — diagnostic only
+    req.write(body);
+    req.end();
+  } catch {
+    // Never let diagnostics crash the main path
+  }
+}
+
+/**
  * Send a potentially long response as multiple messages
  */
 export async function sendChunkedResponse(
   ctx: Context,
   text: string,
 ): Promise<void> {
-  const chunks = chunkMessage(text);
+  if (!text || !text.trim()) {
+    return;
+  }
+
+  const chunks = chunkMessage(text).filter((c) => c.trim().length > 0);
 
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
@@ -86,15 +127,35 @@ export async function sendChunkedResponse(
 
     try {
       await ctx.reply(messageText, { parse_mode: "Markdown" });
-    } catch {
+    } catch (markdownError) {
+      console.error(
+        `[chunker] Markdown send failed for part ${i + 1}:`,
+        markdownError,
+      );
       // If Markdown fails, try without parsing
       try {
         await ctx.reply(chunk);
-      } catch (_error) {
-        // Last resort: send error message
+      } catch (plainError) {
+        console.error(
+          `[chunker] Plain send failed for part ${i + 1}:`,
+          plainError,
+        );
+        // Both Markdown and plain failed — post diagnostic and send error message
+        postDiagnostic({
+          part: i + 1,
+          totalChunks: chunks.length,
+          chunkLength: chunk.length,
+          markdownError: String(markdownError),
+          plainError: String(plainError),
+          chunkPreview: chunk.slice(0, 200),
+        });
         try {
           await ctx.reply(`Error sending message part ${i + 1}`);
-        } catch {
+        } catch (lastError) {
+          console.error(
+            `[chunker] Final fallback failed for part ${i + 1}:`,
+            lastError,
+          );
           // Telegram completely unreachable — nothing we can do
         }
       }

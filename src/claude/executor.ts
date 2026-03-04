@@ -58,9 +58,14 @@ export async function executeClaudeQuery(
     args.push("--resume", sessionId);
   }
 
-  const claudeCommand = config.claude.command;
+  const commandParts = config.claude.command.split(/\s+/);
+  const claudeCommand = commandParts[0];
+  const extraArgs = commandParts.slice(1);
   const cwd = getWorkingDirectory();
-  logger.info({ command: claudeCommand, args, cwd }, "Executing Claude CLI");
+  logger.info(
+    { command: claudeCommand, args: [...extraArgs, ...args], cwd },
+    "Executing Claude CLI",
+  );
 
   return new Promise<ExecuteResult>((rawResolve) => {
     const resolve = (result: ExecuteResult) => {
@@ -68,7 +73,8 @@ export async function executeClaudeQuery(
       rawResolve(result);
     };
 
-    const proc = spawn(claudeCommand, args, {
+    const allArgs = [...extraArgs, ...args];
+    const proc = spawn(claudeCommand, allArgs, {
       cwd,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
