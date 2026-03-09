@@ -343,30 +343,5 @@ export async function textHandler(ctx: Context): Promise<void> {
     "Message received",
   );
 
-  const trimmed = messageText.trim();
-  if (trimmed === "/login" || trimmed.startsWith("/login ")) {
-    const args = trimmed.startsWith("/login ") ? trimmed.slice(7).trim() : "";
-    const n8nUrl = "http://100.106.8.87:5678/webhook/claude-login";
-    try {
-      const body = args
-        ? JSON.stringify({ action: "submit_code", code: args })
-        : JSON.stringify({ action: "start" });
-      const resp = await fetch(n8nUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
-      });
-      if (!resp.ok) {
-        await ctx.reply(
-          `Login request failed (HTTP ${resp.status}). Check n8n.`,
-        );
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await ctx.reply(`Could not reach n8n: ${msg}`);
-    }
-    return;
-  }
-
   await bufferMessage(ctx, messageText);
 }

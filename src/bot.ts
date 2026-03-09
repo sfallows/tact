@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { Bot } from "grammy";
+import { Bot, type Context } from "grammy";
 import { clearHandler } from "./bot/commands/clear.js";
 import { helpHandler } from "./bot/commands/help.js";
 import { startHandler } from "./bot/commands/start.js";
@@ -19,6 +19,7 @@ import {
   startNotificationPoller,
   stopNotificationPoller,
 } from "./notification/queue.js";
+import { clearUserData } from "./user/setup.js";
 import { startQueuePoller, stopQueuePoller } from "./webhook/queue.js";
 import { startWebhookServer } from "./webhook/server.js";
 
@@ -39,6 +40,55 @@ function checkClaudeCommand(
         `You can also set a custom command in ccpa.config.json under "claude.command".`,
     );
     process.exit(1);
+  }
+}
+
+/**
+ * Handle /login and /login <code> commands — routes to n8n, clears session on start.
+ */
+async function handleLogin(
+  ctx: Context,
+  config: ReturnType<typeof getConfig>,
+): Promise<void> {
+  const logger = getLogger();
+  const userId = ctx.from?.id;
+  const args = (
+    typeof ctx.match === "string" ? ctx.match : (ctx.match?.[0] ?? "")
+  ).trim();
+  const n8nUrl = "http://100.106.8.87:5678/webhook/claude-login";
+
+  // On /login start: clear the stale session so next message starts fresh
+  if (!args && userId) {
+    try {
+      const { resolve, join } = await import("node:path");
+      const userDir = resolve(join(config.dataDir, String(userId)));
+      await clearUserData(userDir);
+      logger.info({ userId }, "Session cleared for re-authentication");
+    } catch (err) {
+      logger.warn({ err }, "Could not clear session before login");
+    }
+  }
+
+  try {
+    const body = args
+      ? JSON.stringify({ action: "submit_code", code: args })
+      : JSON.stringify({ action: "start" });
+    const resp = await fetch(n8nUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+    if (resp.ok) {
+      if (args) {
+        await ctx.reply("Code submitted — checking authentication...");
+      }
+      // n8n will send the URL or result back via Telegram directly
+    } else {
+      await ctx.reply(`Login request failed (HTTP ${resp.status}). Check n8n.`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await ctx.reply(`Could not reach n8n: ${msg}`);
   }
 }
 
@@ -84,30 +134,11 @@ export async function startBot(): Promise<void> {
     const text =
       "Please run /compact now to compress the conversation context.";
     await processMessage(ctx, text);
+  });
 
-    // /login — route to n8n for OAuth re-authentication (bypasses Claude)
-    bot.command("login", async (ctx) => {
-      const args = ctx.match?.trim();
-      const n8nUrl = `http://100.106.8.87:5678/webhook/claude-login`;
-      try {
-        const body = args
-          ? JSON.stringify({ action: "submit_code", code: args })
-          : JSON.stringify({ action: "start" });
-        const resp = await fetch(n8nUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body,
-        });
-        if (!resp.ok) {
-          await ctx.reply(
-            `Login request failed (HTTP ${resp.status}). Check n8n.`,
-          );
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await ctx.reply(`Could not reach n8n: ${msg}`);
-      }
-    });
+  // /login — route to n8n for OAuth re-authentication (bypasses Claude)
+  bot.command("login", async (ctx) => {
+    await handleLogin(ctx, config);
   });
 
   // Text message handler
