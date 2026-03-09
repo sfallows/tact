@@ -14,3 +14,16 @@ export function isCorruptedSessionError(error: string | undefined): boolean {
     lower.includes("unexpected role")
   );
 }
+
+/**
+ * Detect if an error indicates an expired OAuth token requiring re-authentication.
+ */
+export function isAuthExpiredError(error: string | undefined): boolean {
+  if (!error) return false;
+  const lower = error.toLowerCase();
+  return (
+    lower.includes("oauth token has expired") ||
+    lower.includes("authentication_error") ||
+    (lower.includes("401") && lower.includes("token"))
+  );
+}

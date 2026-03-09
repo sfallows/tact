@@ -15,7 +15,10 @@ import {
 } from "../../user/setup.js";
 import { drainAll } from "../../webhook/queue.js";
 import { bufferMessage } from "../messageBuffer.js";
-import { isCorruptedSessionError } from "../sessionRecovery.js";
+import {
+  isAuthExpiredError,
+  isCorruptedSessionError,
+} from "../sessionRecovery.js";
 
 // Heartbeat file path — written on message receive and reply (lazy init)
 let _heartbeatPath: string | null = null;
@@ -237,6 +240,18 @@ export async function processMessage(
         { success: result.success, newSessionId: result.sessionId },
         "Retry after session reset",
       );
+    }
+    // Auth expired — notify user to use /login
+    if (!result.success && isAuthExpiredError(result.error)) {
+      try {
+        await ctx.api.deleteMessage(chatId, statusMsgId);
+      } catch {
+        /* ignore */
+      }
+      await ctx.reply(
+        "Claude authentication has expired.\n\nUse /login to re-authenticate, then paste the code back with /login <code>",
+      );
+      return;
     }
 
     // Delete the streaming status message — we'll send the final response as a new message

@@ -84,6 +84,30 @@ export async function startBot(): Promise<void> {
     const text =
       "Please run /compact now to compress the conversation context.";
     await processMessage(ctx, text);
+
+    // /login — route to n8n for OAuth re-authentication (bypasses Claude)
+    bot.command("login", async (ctx) => {
+      const args = ctx.match?.trim();
+      const n8nUrl = `http://100.106.8.87:5678/webhook/claude-login`;
+      try {
+        const body = args
+          ? JSON.stringify({ action: "submit_code", code: args })
+          : JSON.stringify({ action: "start" });
+        const resp = await fetch(n8nUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+        });
+        if (!resp.ok) {
+          await ctx.reply(
+            `Login request failed (HTTP ${resp.status}). Check n8n.`,
+          );
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await ctx.reply(`Could not reach n8n: ${msg}`);
+      }
+    });
   });
 
   // Text message handler
@@ -132,6 +156,10 @@ export async function startBot(): Promise<void> {
       { command: "help", description: "Show help" },
       { command: "clear", description: "Clear conversation history" },
       { command: "compact", description: "Compress conversation context" },
+      {
+        command: "login",
+        description: "Re-authenticate Claude (OAuth expired)",
+      },
     ]);
     logger.info("Telegram bot commands registered");
   } catch (err) {
