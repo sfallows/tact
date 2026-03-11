@@ -1,8 +1,12 @@
 import { execSync } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { Bot, type Context } from "grammy";
 import { clearHandler } from "./bot/commands/clear.js";
 import { helpHandler } from "./bot/commands/help.js";
+import { restartHandler } from "./bot/commands/restart.js";
 import { startHandler } from "./bot/commands/start.js";
+import { thinkHandler } from "./bot/commands/think.js";
 import {
   documentHandler,
   photoHandler,
@@ -19,7 +23,7 @@ import {
   startNotificationPoller,
   stopNotificationPoller,
 } from "./notification/queue.js";
-import { clearUserData } from "./user/setup.js";
+import { clearUserData, saveSessionId } from "./user/setup.js";
 import { startQueuePoller, stopQueuePoller } from "./webhook/queue.js";
 import { startWebhookServer } from "./webhook/server.js";
 
@@ -141,6 +145,16 @@ export async function startBot(): Promise<void> {
     await handleLogin(ctx, config);
   });
 
+  // /restart — clear session and restart the bot service
+  bot.command("restart", async (ctx) => {
+    await restartHandler(ctx);
+  });
+
+  // /think — deep reasoning + peer review (two independent Claude calls)
+  bot.command("think", async (ctx) => {
+    await thinkHandler(ctx);
+  });
+
   // Text message handler
   bot.on("message:text", textHandler);
 
@@ -191,6 +205,14 @@ export async function startBot(): Promise<void> {
         command: "login",
         description: "Re-authenticate Claude (OAuth expired)",
       },
+      {
+        command: "think",
+        description: "Deep reasoning + peer review on a question",
+      },
+      {
+        command: "restart",
+        description: "Clear session and restart the bot",
+      },
     ]);
     logger.info("Telegram bot commands registered");
   } catch (err) {
@@ -200,6 +222,26 @@ export async function startBot(): Promise<void> {
     );
   }
 
+  // Startup recovery: clear poisoned sessions from unclean shutdowns
+  // Covers self-restart, OOM kill, watchdog restart, and systemd auto-restart
+  try {
+    const heartbeatPath = resolve(join(workingDir, ".ccpa", "heartbeat.json"));
+    const raw = await readFile(heartbeatPath, "utf-8");
+    const heartbeat = JSON.parse(raw) as { status?: string; userId?: number };
+    if (heartbeat.status === "processing" && heartbeat.userId) {
+      const staleUserDir = resolve(
+        join(config.dataDir, String(heartbeat.userId)),
+      );
+      await saveSessionId(staleUserDir, null);
+      logger.warn(
+        { userId: heartbeat.userId },
+        "Cleared stale session after unclean shutdown (heartbeat was processing)",
+      );
+    }
+  } catch {
+    // No heartbeat file or parse error — fresh boot, nothing to clear
+  }
+
   // Start bot
   logger.info(
     { allowedUsers: config.access.allowedUserIds.length },
@@ -207,8 +249,16 @@ export async function startBot(): Promise<void> {
   );
 
   await bot.start({
-    onStart: (botInfo) => {
+    onStart: async (botInfo) => {
       logger.info({ username: botInfo.username }, "Bot is running");
+      const userId = config.access.allowedUserIds[0];
+      if (userId) {
+        try {
+          await bot.api.sendMessage(userId, "Bot is back online.");
+        } catch (err) {
+          logger.warn({ error: err }, "Failed to send startup notification");
+        }
+      }
     },
   });
 }

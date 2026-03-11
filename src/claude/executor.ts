@@ -9,6 +9,7 @@ export interface ExecuteOptions {
   sessionId?: string | null;
   onProgress?: (message: string) => void;
   onTextChunk?: (fullText: string) => void;
+  effort?: string;
 }
 
 export interface ExecuteResult {
@@ -33,7 +34,8 @@ export async function executeClaudeQuery(
   options: ExecuteOptions,
 ): Promise<ExecuteResult> {
   _busy = true;
-  const { prompt, downloadsPath, sessionId, onProgress, onTextChunk } = options;
+  const { prompt, downloadsPath, sessionId, onProgress, onTextChunk, effort } =
+    options;
   const logger = getLogger();
   const config = getConfig();
 
@@ -56,6 +58,11 @@ export async function executeClaudeQuery(
   // Resume previous session if we have a session ID
   if (sessionId) {
     args.push("--resume", sessionId);
+  }
+
+  // Extended thinking mode
+  if (effort) {
+    args.push("--effort", effort);
   }
 
   const commandParts = config.claude.command.split(/\s+/);

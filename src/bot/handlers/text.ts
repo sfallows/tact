@@ -262,7 +262,11 @@ export async function processMessage(
     }
 
     // Only save session if the result was successful (don't persist corrupted sessions)
-    if (result.sessionId && !isCorruptedSessionError(result.error)) {
+    if (
+      result.sessionId &&
+      result.success &&
+      !isCorruptedSessionError(result.error)
+    ) {
       await saveSessionId(userDir, result.sessionId);
       logger.debug({ sessionId: result.sessionId }, "Session saved");
     }
@@ -342,6 +346,82 @@ export async function textHandler(ctx: Context): Promise<void> {
     },
     "Message received",
   );
+
+  const trimmed = messageText.trim();
+  if (trimmed === "/login" || trimmed.startsWith("/login ")) {
+    const n8nUrl = "http://100.106.8.87:5678/webhook/claude-login";
+    const parts = trimmed.split(/\s+/);
+    const code = parts.length > 1 ? parts.slice(1).join("").trim() : "";
+    try {
+      if (code) {
+        // Submit the code to the waiting auth helper
+        const resp = await fetch(n8nUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "submit_code", code }),
+        });
+        if (!resp.ok) {
+          await ctx.reply(
+            `Code submission failed (HTTP ${resp.status}). Check n8n.`,
+          );
+          return;
+        }
+        await ctx.reply("Code submitted — checking authentication...");
+        // Poll n8n for result (up to 30s)
+        let authResult = "";
+        for (let i = 0; i < 10; i++) {
+          await new Promise((r) => setTimeout(r, 3000));
+          try {
+            const checkResp = await fetch(n8nUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "check" }),
+            });
+            if (checkResp.ok) {
+              const data = (await checkResp.json()) as { text?: string };
+              const status = data.text || "";
+              if (status.includes("success") || status.includes("successful")) {
+                authResult =
+                  "Authentication successful! Claude is now logged in.";
+                break;
+              } else if (
+                status.includes("error") ||
+                status.includes("failed")
+              ) {
+                authResult = `Authentication failed: ${status}\n\nSend /login to try again.`;
+                break;
+              }
+            }
+          } catch {
+            // ignore poll errors, keep trying
+          }
+        }
+        if (authResult) {
+          await ctx.reply(authResult);
+        } else {
+          await ctx.reply(
+            "Authentication timed out — check /tmp/claude-auth/log on server, or SSH in and run: claude auth status",
+          );
+        }
+      } else {
+        // Start a new auth flow
+        const resp = await fetch(n8nUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "start" }),
+        });
+        if (!resp.ok) {
+          await ctx.reply(
+            `Login request failed (HTTP ${resp.status}). Check n8n.`,
+          );
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await ctx.reply(`Could not reach n8n: ${msg}`);
+    }
+    return;
+  }
 
   await bufferMessage(ctx, messageText);
 }
