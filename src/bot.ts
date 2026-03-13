@@ -41,7 +41,7 @@ function checkClaudeCommand(
       { command },
       `Claude CLI command "${command}" not found or not executable. ` +
         `Please ensure Claude Code is installed and the command is in your PATH. ` +
-        `You can also set a custom command in ccpa.config.json under "claude.command".`,
+        `You can also set a custom command in tact.config.json under "claude.command".`,
     );
     process.exit(1);
   }
@@ -225,7 +225,7 @@ export async function startBot(): Promise<void> {
   // Startup recovery: clear poisoned sessions from unclean shutdowns
   // Covers self-restart, OOM kill, watchdog restart, and systemd auto-restart
   try {
-    const heartbeatPath = resolve(join(workingDir, ".ccpa", "heartbeat.json"));
+    const heartbeatPath = resolve(join(workingDir, ".tact", "heartbeat.json"));
     const raw = await readFile(heartbeatPath, "utf-8");
     const heartbeat = JSON.parse(raw) as { status?: string; userId?: number };
     if (heartbeat.status === "processing" && heartbeat.userId) {

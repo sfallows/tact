@@ -1,6 +1,12 @@
 import { spawn } from "node:child_process";
+import { homedir } from "node:os";
 import { getConfig, getWorkingDirectory } from "../config.js";
 import { getLogger } from "../logger.js";
+
+const HOME = homedir();
+function sanitizePath(s: string): string {
+  return s.replaceAll(HOME, "~");
+}
 
 export interface ExecuteOptions {
   prompt: string;
@@ -159,18 +165,19 @@ export async function executeClaudeQuery(
 
                 // Add more context for specific tools
                 if (toolName === "Read" && block.input?.file_path) {
-                  progressMsg = `Reading: ${block.input.file_path}`;
+                  progressMsg = `Reading: ${sanitizePath(block.input.file_path)}`;
                 } else if (toolName === "Grep" && block.input?.pattern) {
                   progressMsg = `Searching for: ${block.input.pattern}`;
                 } else if (toolName === "Glob" && block.input?.pattern) {
-                  progressMsg = `Finding files: ${block.input.pattern}`;
+                  progressMsg = `Finding files: ${sanitizePath(block.input.pattern)}`;
                 } else if (toolName === "Bash" && block.input?.command) {
-                  const cmd = block.input.command.slice(0, 50);
-                  progressMsg = `Running: ${cmd}${block.input.command.length > 50 ? "..." : ""}`;
+                  const sanitized = sanitizePath(block.input.command);
+                  const cmd = sanitized.slice(0, 60);
+                  progressMsg = `Running: ${cmd}${sanitized.length > 60 ? "..." : ""}`;
                 } else if (toolName === "Edit" && block.input?.file_path) {
-                  progressMsg = `Editing: ${block.input.file_path}`;
+                  progressMsg = `Editing: ${sanitizePath(block.input.file_path)}`;
                 } else if (toolName === "Write" && block.input?.file_path) {
-                  progressMsg = `Writing: ${block.input.file_path}`;
+                  progressMsg = `Writing: ${sanitizePath(block.input.file_path)}`;
                 } else if (toolName === "WebSearch" && block.input?.query) {
                   progressMsg = `Searching web: ${block.input.query}`;
                 } else if (toolName === "WebFetch" && block.input?.url) {

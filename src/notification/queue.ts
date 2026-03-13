@@ -5,7 +5,7 @@
  * Runs alongside the webhook queue on the same 12s poll cycle.
  *
  * Notifications are enqueued externally via notify.sh / notify.py,
- * which insert rows into .ccpa/notifications.db.
+ * which insert rows into .tact/notifications.db.
  */
 import { existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
@@ -51,11 +51,11 @@ let stmtPendingCount: Database.Statement | null = null;
 // --- Database ---
 
 function getDbPath(): string {
-  return join(getWorkingDirectory(), ".ccpa", DB_FILENAME);
+  return join(getWorkingDirectory(), ".tact", DB_FILENAME);
 }
 
 function getSignalPath(): string {
-  return join(getWorkingDirectory(), ".ccpa", SIGNAL_FILENAME);
+  return join(getWorkingDirectory(), ".tact", SIGNAL_FILENAME);
 }
 
 function ensureDb(): Database.Database {

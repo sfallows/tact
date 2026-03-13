@@ -62,8 +62,8 @@ function withFileLock<T>(fn: () => Promise<T>): Promise<T> {
 
 function getQueuePath(): string {
   if (!queueFilePath) {
-    const ccpaDir = join(getWorkingDirectory(), ".ccpa");
-    queueFilePath = join(ccpaDir, QUEUE_FILENAME);
+    const tactDir = join(getWorkingDirectory(), ".tact");
+    queueFilePath = join(tactDir, QUEUE_FILENAME);
   }
   return queueFilePath;
 }
@@ -88,7 +88,7 @@ async function readQueue(): Promise<WebhookQueueItem[]> {
 
 async function writeQueue(items: WebhookQueueItem[]): Promise<void> {
   const path = getQueuePath();
-  const dir = join(getWorkingDirectory(), ".ccpa");
+  const dir = join(getWorkingDirectory(), ".tact");
   if (!existsSync(dir)) {
     await mkdir(dir, { recursive: true });
   }

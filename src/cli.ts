@@ -30,13 +30,13 @@ const CONFIG_TEMPLATE = `{
 
 function showHelp(): void {
   console.log(`
-ccpa-telegram - Claude Code Personal Assistant for Telegram
+tact - Claude Code Personal Assistant for Telegram
 
 Usage:
-  npx ccpa-telegram [command] [options]
+  npx tact [command] [options]
 
 Commands:
-  init            Create ccpa.config.json in the working directory
+  init            Create tact.config.json in the working directory
   start           Start the bot (default)
 
 Options:
@@ -44,12 +44,12 @@ Options:
   --help, -h      Show this help message
 
 Examples:
-  npx ccpa-telegram init
-  npx ccpa-telegram init --cwd ./my-project
-  npx ccpa-telegram
-  npx ccpa-telegram --cwd ./my-project
+  npx tact init
+  npx tact init --cwd ./my-project
+  npx tact
+  npx tact --cwd ./my-project
 
-Configuration (ccpa.config.json):
+Configuration (tact.config.json):
   {
     "telegram": {
       "botToken": "your-bot-token"
@@ -97,19 +97,19 @@ function parseArgs(): ParsedArgs {
 }
 
 async function runInit(cwd: string): Promise<void> {
-  const configPath = join(cwd, "ccpa.config.json");
+  const configPath = join(cwd, "tact.config.json");
 
   if (existsSync(configPath)) {
-    console.error(`Error: ccpa.config.json already exists in ${cwd}`);
+    console.error(`Error: tact.config.json already exists in ${cwd}`);
     process.exit(1);
   }
 
   await writeFile(configPath, CONFIG_TEMPLATE, "utf-8");
-  console.log(`Created ccpa.config.json in ${cwd}`);
+  console.log(`Created tact.config.json in ${cwd}`);
   console.log(`\nNext steps:`);
-  console.log(`1. Edit ccpa.config.json and add your Telegram bot token`);
+  console.log(`1. Edit tact.config.json and add your Telegram bot token`);
   console.log(`2. Add allowed user IDs to the "allowedUserIds" array`);
-  console.log(`3. Run: npx ccpa-telegram --cwd ${cwd}`);
+  console.log(`3. Run: npx tact --cwd ${cwd}`);
   process.exit(0);
 }
 
@@ -117,7 +117,7 @@ async function runStart(cwd: string): Promise<void> {
   // Initialize config with working directory
   initConfig(cwd);
 
-  getLogger().info({ cwd }, "Starting ccpa-telegram");
+  getLogger().info({ cwd }, "Starting tact");
 
   // Start the bot
   await startBot();

@@ -1,4 +1,4 @@
-# ccpa-telegram
+# tact
 
 A Telegram bot that provides access to Claude Code as a personal assistant. Run Claude Code in any directory and interact with it through Telegram.
 
@@ -36,12 +36,12 @@ For complete documentation on Claude Code configuration, see the [Claude Code do
 
 ```bash
 # Initialize a new project
-npx ccpa-telegram init
+npx tact init
 
-# Edit ccpa.config.json with your bot token and allowed user IDs
+# Edit tact.config.json with your bot token and allowed user IDs
 
 # Start the bot
-npx ccpa-telegram
+npx tact
 ```
 
 ## Installation
@@ -49,15 +49,15 @@ npx ccpa-telegram
 ### Using npx (recommended)
 
 ```bash
-npx ccpa-telegram init --cwd ./my-project
-npx ccpa-telegram --cwd ./my-project
+npx tact init --cwd ./my-project
+npx tact --cwd ./my-project
 ```
 
 ## Configuration
 
-### ccpa.config.json
+### tact.config.json
 
-Create a `ccpa.config.json` file in your project directory:
+Create a `tact.config.json` file in your project directory:
 
 ```json
 {
@@ -108,11 +108,11 @@ Environment variables override config file values:
 
 ```
 my-project/
-├── ccpa.config.json      # Bot configuration
+├── tact.config.json      # Bot configuration
 ├── CLAUDE.md             # Claude system prompt
 ├── .claude/
 │   └── settings.json     # Claude settings
-└── .ccpa/
+└── .tact/
     └── users/
         └── {userId}/
             ├── uploads/      # Files FROM user (to Claude)
@@ -124,15 +124,15 @@ my-project/
 
 ```bash
 # Show help
-npx ccpa-telegram --help
+npx tact --help
 
 # Initialize config file
-npx ccpa-telegram init
-npx ccpa-telegram init --cwd ./my-project
+npx tact init
+npx tact init --cwd ./my-project
 
 # Start the bot
-npx ccpa-telegram
-npx ccpa-telegram --cwd ./my-project
+npx tact
+npx tact --cwd ./my-project
 ```
 
 ## Bot Commands
@@ -152,7 +152,7 @@ To create a new Telegram bot and get your bot token:
 3. Choose a **display name** for your bot (e.g., "My Claude Assistant")
 4. Choose a **username** - must be unique and end with `bot` (e.g., `my_claude_assistant_bot`). The length of the username must be between 5 and 32 characters.
 5. BotFather will reply with your bot token (looks like `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`)
-6. Copy this token to your `ccpa.config.json`
+6. Copy this token to your `tact.config.json`
 
 For detailed instructions, see the [Telegram Bot API documentation](https://core.telegram.org/bots#how-do-i-create-a-bot).
 
@@ -224,7 +224,7 @@ Claude can send files back to you through Telegram. Each user has a dedicated `d
 
 ### How It Works
 
-1. **Claude writes a file** to your downloads folder (e.g., `.ccpa/users/{userId}/downloads/report.pdf`)
+1. **Claude writes a file** to your downloads folder (e.g., `.tact/users/{userId}/downloads/report.pdf`)
 2. **The bot detects** the new file after Claude's response completes
 3. **The file is sent** to you via Telegram (as a document)
 4. **The file is deleted** from the server after successful delivery

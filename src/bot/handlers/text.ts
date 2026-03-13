@@ -24,7 +24,7 @@ import {
 let _heartbeatPath: string | null = null;
 function getHeartbeatPath(): string {
   if (!_heartbeatPath) {
-    _heartbeatPath = join(getWorkingDirectory(), ".ccpa", "heartbeat.json");
+    _heartbeatPath = join(getWorkingDirectory(), ".tact", "heartbeat.json");
   }
   return _heartbeatPath;
 }

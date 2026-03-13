@@ -52,7 +52,7 @@ const ConfigSchema = z.object({
   access: z.object({
     allowedUserIds: z.array(z.number()),
   }),
-  dataDir: z.string().default(".ccpa/users"),
+  dataDir: z.string().default(".tact/users"),
   rateLimit: z.object({
     max: z.number().positive().default(10),
     windowMs: z.number().positive().default(60000),
@@ -70,6 +70,8 @@ const ConfigSchema = z.object({
     .object({
       model: TranscriptionModelSchema.default("base.en"),
       showTranscription: z.boolean().default(true),
+      venvPath: z.string().optional(),
+      scriptPath: z.string().optional(),
     })
     .optional(),
 });
@@ -116,6 +118,8 @@ const ConfigFileSchema = z
       .object({
         model: TranscriptionModelSchema.default("base.en"),
         showTranscription: z.boolean(),
+        venvPath: z.string().optional(),
+        scriptPath: z.string().optional(),
       })
       .partial()
       .optional(),
@@ -140,7 +144,7 @@ function parseAllowedUserIds(value: string | undefined): number[] {
 }
 
 function loadConfigFile(): z.infer<typeof ConfigFileSchema> {
-  const configPath = join(workingDirectory, "ccpa.config.json");
+  const configPath = join(workingDirectory, "tact.config.json");
 
   if (!existsSync(configPath)) {
     return {};
@@ -154,7 +158,7 @@ function loadConfigFile(): z.infer<typeof ConfigFileSchema> {
     if (!result.success) {
       getLogger().error(
         { error: result.error.format() },
-        "Invalid ccpa.config.json",
+        "Invalid tact.config.json",
       );
       return {};
     }
@@ -162,7 +166,7 @@ function loadConfigFile(): z.infer<typeof ConfigFileSchema> {
     getLogger().info({ path: configPath }, "Loaded configuration");
     return result.data;
   } catch (error) {
-    getLogger().error({ error }, "Failed to read ccpa.config.json");
+    getLogger().error({ error }, "Failed to read tact.config.json");
     return {};
   }
 }
@@ -182,7 +186,7 @@ export function loadConfig(): Config {
         ? parseAllowedUserIds(process.env.ALLOWED_USER_IDS)
         : fileConfig.access?.allowedUserIds || [],
     },
-    dataDir: process.env.DATA_DIR || fileConfig.dataDir || ".ccpa/users",
+    dataDir: process.env.DATA_DIR || fileConfig.dataDir || ".tact/users",
     rateLimit: {
       max: process.env.RATE_LIMIT_MAX
         ? parseInt(process.env.RATE_LIMIT_MAX, 10)
@@ -216,6 +220,9 @@ export function loadConfig(): Config {
         process.env.SHOW_TRANSCRIPTION === "false"
           ? false
           : (fileConfig.transcription?.showTranscription ?? true),
+      venvPath: process.env.WHISPER_VENV || fileConfig.transcription?.venvPath,
+      scriptPath:
+        process.env.WHISPER_SCRIPT || fileConfig.transcription?.scriptPath,
     },
   };
 

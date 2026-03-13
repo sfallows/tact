@@ -1,10 +1,10 @@
 {
-  "name": "ccpa-telegram",
+  "name": "tact",
   "version": "1.0.7",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "ccpa-telegram": "dist/cli.js"
+    "tact": "dist/cli.js"
   },
   "files": [
     "dist",

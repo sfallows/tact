@@ -26,7 +26,7 @@ export async function restartHandler(ctx: Context): Promise<void> {
 
   // Small delay to ensure the reply is sent before we die
   setTimeout(() => {
-    exec("systemctl restart ccpa-telegram", () => {
+    exec("systemctl restart tact", () => {
       // Process will be killed by systemd before this runs
     });
   }, 500);

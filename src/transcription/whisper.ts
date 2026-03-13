@@ -1,15 +1,20 @@
 import { exec } from "node:child_process";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { promisify } from "node:util";
-import { getConfig } from "../config.js";
+import { getConfig, getWorkingDirectory } from "../config.js";
 import { getLogger } from "../logger.js";
 
 const execAsync = promisify(exec);
 
-const WHISPER_VENV =
-  "/home/claude/projects/ccpa-telegram/.claude/whisper/venv/bin/python";
-const WHISPER_SCRIPT =
-  "/home/claude/projects/ccpa-telegram/.claude/whisper/transcribe.py";
+function getWhisperPaths() {
+  const config = getConfig();
+  const base = join(getWorkingDirectory(), ".claude", "whisper");
+  return {
+    venv: config.transcription?.venvPath ?? join(base, "venv", "bin", "python"),
+    script: config.transcription?.scriptPath ?? join(base, "transcribe.py"),
+  };
+}
 
 export interface TranscriptionResult {
   text: string;
@@ -30,6 +35,8 @@ export async function transcribeAudio(
     throw new Error(`Audio file not found: ${audioPath}`);
   }
 
+  const { venv, script } = getWhisperPaths();
+
   // Map config model names (base.en) to Python whisper names (base)
   const configModel = config.transcription?.model || "base.en";
   const model = configModel.replace(/\.en$/, "");
@@ -40,7 +47,7 @@ export async function transcribeAudio(
 
   try {
     const { stdout } = await execAsync(
-      `"${WHISPER_VENV}" "${WHISPER_SCRIPT}" "${audioPath}" --model ${model} --json`,
+      `"${venv}" "${script}" "${audioPath}" --model ${model} --json`,
       { timeout: 120000 },
     );
 

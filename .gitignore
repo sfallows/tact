@@ -22,3 +22,5 @@ data/
 
 **/.env
 **/.ccpa
+**/.tact
+tact.config.json
