@@ -1,4 +1,5 @@
 import { exec } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { unlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -32,6 +33,7 @@ async function convertToWav(
   try {
     await execAsync(
       `ffmpeg -i "${inputPath}" -ar 16000 -ac 1 -y "${outputPath}"`,
+      { timeout: 60000 },
     );
     logger.debug({ inputPath, outputPath }, "Audio converted to WAV");
   } catch (error) {
@@ -63,6 +65,8 @@ export async function voiceHandler(ctx: Context): Promise<void> {
   const userDir = resolve(join(config.dataDir, String(userId)));
 
   try {
+    ctx.replyWithChatAction("typing").catch(() => {});
+
     await ensureUserSetup(userDir);
 
     // Download voice file from Telegram
@@ -75,7 +79,11 @@ export async function voiceHandler(ctx: Context): Promise<void> {
     }
 
     const fileUrl = `https://api.telegram.org/file/bot${config.telegram.botToken}/${filePath}`;
-    const response = await fetch(fileUrl);
+    const downloadAc = new AbortController();
+    const downloadTimeout = setTimeout(() => downloadAc.abort(), 30000);
+    const response = await fetch(fileUrl, {
+      signal: downloadAc.signal,
+    }).finally(() => clearTimeout(downloadTimeout));
     if (!response.ok) {
       await ctx.reply(
         `Failed to download voice message from Telegram (HTTP ${response.status}).`,
@@ -85,10 +93,10 @@ export async function voiceHandler(ctx: Context): Promise<void> {
     const buffer = Buffer.from(await response.arrayBuffer());
 
     // Save original OGA file
-    const timestamp = Date.now();
+    const id = randomUUID();
     const uploadsDir = getUploadsPath(userDir);
-    const ogaPath = join(uploadsDir, `voice_${timestamp}.oga`);
-    const wavPath = join(uploadsDir, `voice_${timestamp}.wav`);
+    const ogaPath = join(uploadsDir, `voice_${id}.oga`);
+    const wavPath = join(uploadsDir, `voice_${id}.wav`);
     await writeFile(ogaPath, buffer);
 
     logger.debug({ path: ogaPath }, "Voice file saved");

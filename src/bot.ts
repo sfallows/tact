@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Bot, type Context } from "grammy";
@@ -6,6 +7,7 @@ import { clearHandler } from "./bot/commands/clear.js";
 import { helpHandler } from "./bot/commands/help.js";
 import { restartHandler } from "./bot/commands/restart.js";
 import { startHandler } from "./bot/commands/start.js";
+import { statusHandler } from "./bot/commands/status.js";
 import { thinkHandler } from "./bot/commands/think.js";
 import {
   documentHandler,
@@ -121,12 +123,28 @@ export async function startBot(): Promise<void> {
   checkClaudeCommand(config.claude.command, logger);
   logger.info({ command: config.claude.command }, "Claude CLI verified");
 
+  // Warn if transcription is configured but Whisper files are missing
+  if (config.transcription) {
+    const whisperBase = join(workingDir, ".claude", "whisper");
+    const venv =
+      config.transcription.venvPath ??
+      join(whisperBase, "venv", "bin", "python");
+    const script =
+      config.transcription.scriptPath ?? join(whisperBase, "transcribe.py");
+    if (!existsSync(venv) || !existsSync(script)) {
+      logger.warn(
+        { venv, script },
+        "Transcription configured but Whisper venv/script not found — voice messages will fail until set up",
+      );
+    }
+  }
+
   // Create bot instance
   const bot = new Bot(config.telegram.botToken);
 
-  // Apply middleware
-  bot.use(authMiddleware);
+  // Apply middleware (rate limit first to shed load before auth)
   bot.use(rateLimitMiddleware);
+  bot.use(authMiddleware);
 
   // Register commands
   bot.command("start", startHandler);
@@ -148,6 +166,11 @@ export async function startBot(): Promise<void> {
   // /restart — clear session and restart the bot service
   bot.command("restart", async (ctx) => {
     await restartHandler(ctx);
+  });
+
+  // /status — show runtime status (uptime, Claude state, queue depths)
+  bot.command("status", async (ctx) => {
+    await statusHandler(ctx);
   });
 
   // /think — deep reasoning + peer review (two independent Claude calls)
@@ -213,6 +236,10 @@ export async function startBot(): Promise<void> {
         command: "restart",
         description: "Clear session and restart the bot",
       },
+      {
+        command: "status",
+        description: "Show bot runtime status",
+      },
     ]);
     logger.info("Telegram bot commands registered");
   } catch (err) {
@@ -228,14 +255,14 @@ export async function startBot(): Promise<void> {
     const heartbeatPath = resolve(join(workingDir, ".tact", "heartbeat.json"));
     const raw = await readFile(heartbeatPath, "utf-8");
     const heartbeat = JSON.parse(raw) as { status?: string; userId?: number };
-    if (heartbeat.status === "processing" && heartbeat.userId) {
+    if (heartbeat.userId) {
       const staleUserDir = resolve(
         join(config.dataDir, String(heartbeat.userId)),
       );
       await saveSessionId(staleUserDir, null);
       logger.warn(
-        { userId: heartbeat.userId },
-        "Cleared stale session after unclean shutdown (heartbeat was processing)",
+        { userId: heartbeat.userId, heartbeatStatus: heartbeat.status },
+        "Cleared stale session after unclean shutdown",
       );
     }
   } catch {

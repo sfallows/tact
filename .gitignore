@@ -24,3 +24,6 @@ data/
 **/.ccpa
 **/.tact
 tact.config.json
+
+# Secrets
+.credentials/

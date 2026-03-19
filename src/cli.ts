@@ -114,6 +114,8 @@ async function runInit(cwd: string): Promise<void> {
 }
 
 async function runStart(cwd: string): Promise<void> {
+  process.title = "tact-bot";
+
   // Initialize config with working directory
   initConfig(cwd);
 

@@ -6,10 +6,15 @@ export async function helpHandler(ctx: Context): Promise<void> {
       `*Commands:*\n` +
       `/start - Welcome message\n` +
       `/help - Show this help\n` +
-      `/clear - Clear conversation history\n\n` +
+      `/clear - Clear conversation history\n` +
+      `/status - Show bot and queue status\n` +
+      `/restart - Restart the bot service\n` +
+      `/think <question> - Extended thinking mode\n` +
+      `/login - Trigger Claude re-authentication\n` +
+      `/login <code> - Submit auth code\n\n` +
       `*Usage:*\n` +
       `Just send any message to chat with Claude.\n` +
-      `You can also send images and documents for analysis.\n\n` +
+      `You can also send images, documents, and voice messages.\n\n` +
       `Your conversation history is preserved between messages. ` +
       `Use /clear to start a fresh conversation.\n\n` +
       `*Configuration:*\n` +

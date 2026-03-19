@@ -19,7 +19,7 @@ import { enqueue, QueueFullError } from "./queue.js";
  * 202 Accepted immediately with queue position. Results are delivered
  * to Telegram if notify is true (default).
  */
-export function startWebhookServer(bot: Bot): void {
+export function startWebhookServer(_bot: Bot): void {
   const config = getConfig();
   const logger = getLogger();
   const port = config.webhookPort ?? 9099;
@@ -40,6 +40,13 @@ export function startWebhookServer(bot: Bot): void {
 
   const server = createServer(
     async (req: IncomingMessage, res: ServerResponse) => {
+      // Health check — unauthenticated, accessible from Docker
+      if (req.method === "GET" && req.url === "/health") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok" }));
+        return;
+      }
+
       // Only accept POST /webhook
       if (req.method !== "POST" || req.url !== "/webhook") {
         res.writeHead(404, { "Content-Type": "application/json" });
@@ -50,21 +57,34 @@ export function startWebhookServer(bot: Bot): void {
       // Check auth
       const authHeader = req.headers.authorization || "";
       if (authHeader !== `Bearer ${webhookSecret}`) {
+        logger.warn(
+          { ip: req.socket.remoteAddress, path: req.url },
+          "Unauthorized webhook request",
+        );
         res.writeHead(401, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Unauthorized" }));
         return;
       }
 
-      // Parse body (capped at 1MB to prevent OOM)
+      // Parse body (capped at 1MB, with read timeout to prevent slow-loris)
       const MAX_BODY = 1_048_576;
       let body = "";
-      for await (const chunk of req) {
-        body += chunk;
-        if (body.length > MAX_BODY) {
-          res.writeHead(413, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Payload too large" }));
-          return;
+      const bodyTimer = setTimeout(
+        () => req.destroy(new Error("Body read timeout")),
+        10_000,
+      );
+      try {
+        for await (const chunk of req) {
+          body += chunk;
+          if (body.length > MAX_BODY) {
+            clearTimeout(bodyTimer);
+            res.writeHead(413, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Payload too large" }));
+            return;
+          }
         }
+      } finally {
+        clearTimeout(bodyTimer);
       }
 
       let payload: { message?: string; notify?: boolean };
@@ -82,7 +102,7 @@ export function startWebhookServer(bot: Bot): void {
         return;
       }
 
-      const notify = payload.notify !== false; // Default: send to Telegram
+      const notify = payload.notify ?? true; // Default: send to Telegram
 
       logger.info(
         { messageLength: payload.message.length, notify },
@@ -122,7 +142,7 @@ export function startWebhookServer(bot: Bot): void {
     }
   });
 
-  server.listen(port, "127.0.0.1", () => {
-    logger.info({ port }, "Webhook server listening (localhost only)");
+  server.listen(port, "0.0.0.0", () => {
+    logger.info({ port }, "Webhook server listening");
   });
 }

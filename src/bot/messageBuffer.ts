@@ -16,6 +16,7 @@ interface UserBuffer {
 type MessageProcessor = (ctx: Context, combinedText: string) => Promise<void>;
 
 const userBuffers = new Map<number, UserBuffer>();
+const MAX_BUFFER_MESSAGES = 20;
 
 let bufferDelayMs = 0;
 let processor: MessageProcessor | null = null;
@@ -108,8 +109,16 @@ export async function bufferMessage(
 
   const buffer = getBuffer(userId);
 
-  // If currently processing a previous batch, queue the message
-  // It will be picked up after processing completes
+  // Drop messages beyond the cap to prevent unbounded memory growth
+  if (buffer.messages.length >= MAX_BUFFER_MESSAGES) {
+    const logger = getLogger();
+    logger.warn(
+      { userId, buffered: buffer.messages.length },
+      "Message buffer full — dropping oldest message",
+    );
+    buffer.messages.shift();
+  }
+
   buffer.messages.push({
     text: messageText,
     ctx,

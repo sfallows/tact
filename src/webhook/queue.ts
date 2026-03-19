@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Bot } from "grammy";
+import { type Bot, GrammyError } from "grammy";
 import { executeClaudeQuery, isClaudeBusy } from "../claude/executor.js";
 import { getConfig, getWorkingDirectory } from "../config.js";
 import { getLogger } from "../logger.js";
+import { chunkMessage } from "../telegram/chunker.js";
 import {
   ensureUserSetup,
   getDownloadsPath,
@@ -93,7 +94,7 @@ async function writeQueue(items: WebhookQueueItem[]): Promise<void> {
     await mkdir(dir, { recursive: true });
   }
   // Atomic write: write to temp file then rename (prevents corruption on crash)
-  const tmpPath = path + ".tmp";
+  const tmpPath = `${path}.tmp`;
   await writeFile(tmpPath, JSON.stringify(items, null, 2), "utf-8");
   await rename(tmpPath, path);
 }
@@ -101,7 +102,7 @@ async function writeQueue(items: WebhookQueueItem[]): Promise<void> {
 // --- Hashing for dedup ---
 
 function hashMessage(message: string): string {
-  return createHash("sha256").update(message).digest("hex").slice(0, 16);
+  return createHash("sha256").update(message).digest("hex").slice(0, 32);
 }
 
 // --- Public API ---
@@ -123,13 +124,20 @@ export function enqueue(
     const queue = await readQueue();
     const contentHash = hashMessage(message);
 
-    // Dedup: if a pending item with same hash exists, return it
-    const pendingItems = queue.filter((i) => i.status === "pending");
-    const existing = pendingItems.find(
+    // Dedup: if an identical item exists (pending or currently processing), skip
+    const dedupItems = queue.filter(
+      (i) => i.status === "pending" || i.status === "processing",
+    );
+    const existing = dedupItems.find(
       (item) => item.contentHash === contentHash,
     );
     if (existing) {
-      const position = pendingItems.indexOf(existing) + 1;
+      // position 0 = currently being processed; 1+ = position in pending queue
+      if (existing.status === "processing") {
+        return { id: existing.id, position: 0, duplicate: true };
+      }
+      const pendingItems = queue.filter((i) => i.status === "pending");
+      const position = Math.max(pendingItems.indexOf(existing) + 1, 1);
       return { id: existing.id, position, duplicate: true };
     }
 
@@ -163,16 +171,12 @@ export function enqueue(
 export async function drainQueue(): Promise<boolean> {
   const logger = getLogger();
 
-  if (processing) {
-    return false;
-  }
-
-  if (isClaudeBusy()) {
-    return false;
-  }
-
-  // Claim next pending item under lock; also prune expired items
+  // Claim next pending item under lock; also prune expired items.
+  // Both `processing` and `isClaudeBusy()` are checked inside the lock so that
+  // concurrent callers can't both pass the guard and claim items simultaneously.
   const claimed = await withFileLock(async () => {
+    if (processing) return null;
+    if (isClaudeBusy()) return null;
     const queue = await readQueue();
     const now = Date.now();
     let changed = false;
@@ -202,12 +206,11 @@ export async function drainQueue(): Promise<boolean> {
 
     nextItem.status = "processing";
     await writeQueue(active);
+    processing = true; // Set inside lock — prevents concurrent drainQueue calls from claiming
     return nextItem;
   });
 
   if (!claimed) return false;
-
-  processing = true;
 
   try {
     logger.info(
@@ -217,6 +220,13 @@ export async function drainQueue(): Promise<boolean> {
 
     const config = getConfig();
     const primaryUserId = config.access.allowedUserIds[0];
+    if (!primaryUserId) {
+      logger.error(
+        { queueId: claimed.id },
+        "No primary user configured — cannot process queue item",
+      );
+      return false;
+    }
     const userDir = join(config.dataDir, String(primaryUserId));
     await ensureUserSetup(userDir);
 
@@ -242,16 +252,30 @@ export async function drainQueue(): Promise<boolean> {
         const text = result.success
           ? result.output
           : result.error || "An error occurred processing queued webhook";
-        const chunks = splitText(text, 4000);
+        const chunks = chunkMessage(text);
         for (const chunk of chunks) {
           await botInstance.api.sendMessage(primaryUserId, chunk);
         }
       } catch (err) {
-        sendFailed = true;
-        logger.error(
-          { error: err, queueId: claimed.id },
-          "Failed to send queued result to Telegram",
-        );
+        // Permanent errors (bot blocked, chat not found) should not retry
+        const isPermanent =
+          err instanceof GrammyError &&
+          (err.error_code === 403 ||
+            (err.error_code === 400 &&
+              (err.description.includes("chat not found") ||
+                err.description.includes("user not found"))));
+        if (isPermanent) {
+          logger.error(
+            { error: err, queueId: claimed.id },
+            "Permanent Telegram error sending queued result — dropping",
+          );
+        } else {
+          sendFailed = true;
+          logger.error(
+            { error: err, queueId: claimed.id },
+            "Failed to send queued result to Telegram",
+          );
+        }
       }
     }
 
@@ -271,6 +295,7 @@ export async function drainQueue(): Promise<boolean> {
             await writeQueue(filtered);
           } else {
             item.status = "pending";
+            item.timestamp = Date.now();
             await writeQueue(updatedQueue);
             logger.warn(
               { queueId: claimed.id, retries: item.retries },
@@ -330,6 +355,7 @@ export async function drainQueue(): Promise<boolean> {
           await writeQueue(filtered);
         } else {
           item.status = "pending";
+          item.timestamp = Date.now();
           await writeQueue(updatedQueue);
           logger.warn(
             { queueId: claimed.id, retries: item.retries },
@@ -400,23 +426,18 @@ export function stopQueuePoller(): void {
   }
 }
 
-// --- Helper ---
-
-function splitText(text: string, maxLen: number): string[] {
-  if (text.length <= maxLen) return [text];
-  const chunks: string[] = [];
-  let remaining = text;
-  while (remaining.length > 0) {
-    if (remaining.length <= maxLen) {
-      chunks.push(remaining);
-      break;
-    }
-    let split = remaining.lastIndexOf("\n\n", maxLen);
-    if (split < maxLen * 0.5) split = remaining.lastIndexOf("\n", maxLen);
-    if (split < maxLen * 0.5) split = remaining.lastIndexOf(" ", maxLen);
-    if (split < maxLen * 0.5) split = maxLen;
-    chunks.push(remaining.slice(0, split));
-    remaining = remaining.slice(split).trimStart();
+export function getWebhookQueueStats(): {
+  pending: number;
+  processing: boolean;
+} {
+  // Best-effort sync read — no lock needed, display only
+  try {
+    const path = getQueuePath();
+    const data = readFileSync(path, "utf-8");
+    const items = JSON.parse(data) as WebhookQueueItem[];
+    const pending = items.filter((i) => i.status === "pending").length;
+    return { pending, processing };
+  } catch {
+    return { pending: 0, processing };
   }
-  return chunks;
 }

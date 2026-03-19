@@ -14,6 +14,7 @@ import type { Bot } from "grammy";
 import { isClaudeBusy } from "../claude/executor.js";
 import { getConfig, getWorkingDirectory } from "../config.js";
 import { getLogger } from "../logger.js";
+import { chunkMessage } from "../telegram/chunker.js";
 
 // --- Types ---
 
@@ -113,8 +114,8 @@ function checkAndClearSignal(): boolean {
       unlinkSync(signalPath);
       return true;
     }
-  } catch {
-    // Non-fatal
+  } catch (err) {
+    getLogger().warn({ error: err }, "Failed to remove notify signal file");
   }
   return false;
 }
@@ -153,7 +154,7 @@ export async function drainNotification(): Promise<boolean> {
   );
 
   try {
-    const chunks = splitMessage(row.payload, 4000);
+    const chunks = chunkMessage(row.payload);
     for (const chunk of chunks) {
       await botInstance.api.sendMessage(primaryUserId, chunk);
     }
@@ -195,13 +196,9 @@ export async function drainNotification(): Promise<boolean> {
  * Drain all pending notifications sequentially.
  */
 export async function drainAllNotifications(): Promise<void> {
-  let sent = 0;
   while (await drainNotification()) {
-    sent++;
-    // Brief pause between messages to respect Telegram rate limits (1 msg/s per chat)
-    if (sent > 0) {
-      await new Promise((resolve) => setTimeout(resolve, 1100));
-    }
+    // Brief pause between messages to respect Telegram rate limits (~1 msg/s per chat)
+    await new Promise((resolve) => setTimeout(resolve, 1100));
   }
 }
 
@@ -263,6 +260,16 @@ export async function startNotificationPoller(bot: Bot): Promise<void> {
   );
 }
 
+export function getNotificationQueueStats(): { pending: number } {
+  if (!stmtPendingCount) return { pending: 0 };
+  try {
+    const row = stmtPendingCount.get() as { count: number };
+    return { pending: row.count };
+  } catch {
+    return { pending: 0 };
+  }
+}
+
 export function stopNotificationPoller(): void {
   if (pollTimer) {
     clearInterval(pollTimer);
@@ -276,25 +283,9 @@ export function stopNotificationPoller(): void {
     }
     db = null;
   }
-}
-
-// --- Helper ---
-
-function splitMessage(text: string, maxLen: number): string[] {
-  if (text.length <= maxLen) return [text];
-  const chunks: string[] = [];
-  let remaining = text;
-  while (remaining.length > 0) {
-    if (remaining.length <= maxLen) {
-      chunks.push(remaining);
-      break;
-    }
-    let split = remaining.lastIndexOf("\n\n", maxLen);
-    if (split < maxLen * 0.5) split = remaining.lastIndexOf("\n", maxLen);
-    if (split < maxLen * 0.5) split = remaining.lastIndexOf(" ", maxLen);
-    if (split < maxLen * 0.5) split = maxLen;
-    chunks.push(remaining.slice(0, split));
-    remaining = remaining.slice(split).trimStart();
-  }
-  return chunks;
+  stmtClaim = null;
+  stmtMarkSent = null;
+  stmtMarkFailed = null;
+  stmtRequeue = null;
+  stmtPendingCount = null;
 }

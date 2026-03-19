@@ -66,6 +66,7 @@ const ConfigSchema = z.object({
   messageBufferMs: z.number().nonnegative().default(0),
   claudeTimeoutSeconds: z.number().positive().default(600).optional(),
   webhookPort: z.number().positive().default(9099).optional(),
+  loginWebhookUrl: z.string().url().optional(),
   transcription: z
     .object({
       model: TranscriptionModelSchema.default("base.en"),
@@ -114,6 +115,7 @@ const ConfigFileSchema = z
     messageBufferMs: z.number().nonnegative().optional(),
     claudeTimeoutSeconds: z.number().positive().optional(),
     webhookPort: z.number().positive().optional(),
+    loginWebhookUrl: z.string().url().optional(),
     transcription: z
       .object({
         model: TranscriptionModelSchema.default("base.en"),
@@ -211,6 +213,8 @@ export function loadConfig(): Config {
     webhookPort: process.env.WEBHOOK_PORT
       ? parseInt(process.env.WEBHOOK_PORT, 10)
       : (fileConfig.webhookPort ?? 9099),
+    loginWebhookUrl:
+      process.env.LOGIN_WEBHOOK_URL || fileConfig.loginWebhookUrl,
     transcription: {
       model:
         process.env.WHISPER_MODEL ||
@@ -229,6 +233,10 @@ export function loadConfig(): Config {
   const result = ConfigSchema.safeParse(rawConfig);
 
   if (!result.success) {
+    const formatted = JSON.stringify(result.error.format(), null, 2);
+    process.stderr.write(
+      `\nConfiguration validation failed:\n${formatted}\n\n`,
+    );
     getLogger().error(
       { error: result.error.format() },
       "Configuration validation failed",

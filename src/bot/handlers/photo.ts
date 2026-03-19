@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Context } from "grammy";
@@ -35,6 +36,8 @@ export async function photoHandler(ctx: Context): Promise<void> {
   const userDir = resolve(join(config.dataDir, String(userId)));
 
   try {
+    ctx.replyWithChatAction("typing").catch(() => {});
+
     await ensureUserSetup(userDir);
 
     // Get the largest photo (last in array)
@@ -48,7 +51,11 @@ export async function photoHandler(ctx: Context): Promise<void> {
     }
 
     const fileUrl = `https://api.telegram.org/file/bot${config.telegram.botToken}/${filePath}`;
-    const response = await fetch(fileUrl);
+    const downloadAc = new AbortController();
+    const downloadTimeout = setTimeout(() => downloadAc.abort(), 30000);
+    const response = await fetch(fileUrl, {
+      signal: downloadAc.signal,
+    }).finally(() => clearTimeout(downloadTimeout));
     if (!response.ok) {
       await ctx.reply(
         `Failed to download image from Telegram (HTTP ${response.status}).`,
@@ -58,7 +65,7 @@ export async function photoHandler(ctx: Context): Promise<void> {
     const buffer = Buffer.from(await response.arrayBuffer());
 
     const ext = filePath.split(".").pop() || "jpg";
-    const imageName = `image_${Date.now()}.${ext}`;
+    const imageName = `image_${randomUUID()}.${ext}`;
     const uploadsDir = getUploadsPath(userDir);
     const imagePath = join(uploadsDir, imageName);
     await writeFile(imagePath, buffer);

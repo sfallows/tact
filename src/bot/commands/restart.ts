@@ -1,4 +1,4 @@
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { join, resolve } from "node:path";
 import type { Context } from "grammy";
 import { getConfig } from "../../config.js";
@@ -26,8 +26,19 @@ export async function restartHandler(ctx: Context): Promise<void> {
 
   // Small delay to ensure the reply is sent before we die
   setTimeout(() => {
-    exec("systemctl restart tact", () => {
-      // Process will be killed by systemd before this runs
-    });
+    if (process.platform === "darwin") {
+      // macOS: LaunchAgent via launchctl
+      const uid = process.getuid?.() ?? 0;
+      execFile(
+        "launchctl",
+        ["kickstart", "-k", `gui/${uid}/com.sfallows.tact`],
+        () => {},
+      );
+    } else {
+      // Linux: systemd unit
+      execFile("systemctl", ["restart", "tact"], () => {
+        // Process will be killed by systemd before this runs
+      });
+    }
   }, 500);
 }

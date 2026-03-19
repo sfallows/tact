@@ -26,11 +26,12 @@ export interface ExecuteResult {
   timedOut?: boolean;
 }
 
-// --- Busy lock ---
-let _busy = false;
+// --- Per-user busy lock ---
+const _busyUsers = new Set<string>();
 
-export function isClaudeBusy(): boolean {
-  return _busy;
+export function isClaudeBusy(userDir?: string): boolean {
+  if (userDir !== undefined) return _busyUsers.has(userDir);
+  return _busyUsers.size > 0;
 }
 
 /**
@@ -39,7 +40,7 @@ export function isClaudeBusy(): boolean {
 export async function executeClaudeQuery(
   options: ExecuteOptions,
 ): Promise<ExecuteResult> {
-  _busy = true;
+  _busyUsers.add(options.userDir);
   const { prompt, downloadsPath, sessionId, onProgress, onTextChunk, effort } =
     options;
   const logger = getLogger();
@@ -82,7 +83,7 @@ export async function executeClaudeQuery(
 
   return new Promise<ExecuteResult>((rawResolve) => {
     const resolve = (result: ExecuteResult) => {
-      _busy = false;
+      _busyUsers.delete(options.userDir);
       rawResolve(result);
     };
 
@@ -114,6 +115,10 @@ export async function executeClaudeQuery(
         // Force kill after 10s if SIGTERM doesn't work
         setTimeout(() => {
           try {
+            logger.warn(
+              { sessionId: currentSessionId },
+              "Claude process did not exit after SIGTERM — sending SIGKILL",
+            );
             proc.kill("SIGKILL");
           } catch {
             /* already dead */

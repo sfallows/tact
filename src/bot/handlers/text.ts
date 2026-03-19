@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import type { Context } from "grammy";
 import { executeClaudeQuery } from "../../claude/executor.js";
 import { getConfig, getWorkingDirectory } from "../../config.js";
+import { TELEGRAM_MAX_LENGTH } from "../../constants.js";
 import { getLogger } from "../../logger.js";
 import { drainAllNotifications } from "../../notification/queue.js";
 import { sendChunkedResponse } from "../../telegram/chunker.js";
@@ -43,26 +44,26 @@ async function writeHeartbeat(state: HeartbeatState): Promise<void> {
       JSON.stringify(state, null, 2),
       "utf-8",
     );
-  } catch {
-    // Non-fatal — don't let heartbeat failures break message handling
+  } catch (err) {
+    const logger = getLogger();
+    logger.warn(
+      { error: err },
+      "Failed to write heartbeat — session recovery may be unreliable",
+    );
   }
 }
 
 /** Format a Unix timestamp (seconds) as "h:MM AM/PM CT" */
 function formatTimestamp(unixSeconds: number): string {
   const date = new Date(unixSeconds * 1000);
-  return (
-    date.toLocaleString("en-US", {
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-      timeZone: "America/Chicago",
-    }) + " CT"
-  );
+  return `${date.toLocaleString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: "America/Chicago",
+  })} CT`;
 }
 
-// Telegram message length limit
-const TG_MAX = 4096;
 // How often to update the streaming message (ms)
 const STREAM_UPDATE_INTERVAL = 1500;
 
@@ -81,7 +82,13 @@ export async function processMessage(
 
   const userDir = resolve(join(config.dataDir, String(userId)));
 
+  // Declared outside try so catch can clear it on any error path
+  let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
+
   try {
+    // Acknowledge receipt immediately — expires after 5s but bridges gap before "Processing..." appears
+    ctx.replyWithChatAction("typing").catch(() => {});
+
     logger.debug({ userDir }, "Setting up user directory");
     await ensureUserSetup(userDir);
 
@@ -145,10 +152,10 @@ export async function processMessage(
       try {
         // Show last portion if text exceeds Telegram limit (keep room for cursor)
         const display =
-          streamedText.length > TG_MAX - 10
-            ? "..." + streamedText.slice(-(TG_MAX - 10))
+          streamedText.length > TELEGRAM_MAX_LENGTH - 10
+            ? `...${streamedText.slice(-(TELEGRAM_MAX_LENGTH - 10))}`
             : streamedText;
-        await ctx.api.editMessageText(chatId, statusMsgId, display + " ▍");
+        await ctx.api.editMessageText(chatId, statusMsgId, `${display} ▍`);
       } catch {
         // Ignore edit errors (rate limit, message not modified, etc.)
       }
@@ -167,7 +174,7 @@ export async function processMessage(
     const onProgress = async (message: string) => {
       isInToolUse = true;
       const now = Date.now();
-      if (now - lastProgressUpdate > 2000 && message !== lastProgressText) {
+      if (now - lastProgressUpdate > 2000) {
         lastProgressUpdate = now;
         lastProgressText = message;
         try {
@@ -180,6 +187,24 @@ export async function processMessage(
       }
     };
 
+    // Heartbeat: edit status message every 45s if no recent progress update
+    const processStart = Date.now();
+    heartbeatInterval = setInterval(async () => {
+      if (Date.now() - lastProgressUpdate < 40000) return; // recent update, skip
+      const elapsed = Math.round((Date.now() - processStart) / 1000);
+      const label = lastProgressText ? `${lastProgressText} ` : "";
+      try {
+        await ctx.api.editMessageText(
+          chatId,
+          statusMsgId,
+          `_${label}(${elapsed}s)_`,
+          { parse_mode: "Markdown" },
+        );
+      } catch {
+        // Ignore
+      }
+    }, 45000);
+
     const downloadsPath = getDownloadsPath(userDir);
 
     logger.debug("Executing Claude query");
@@ -191,6 +216,7 @@ export async function processMessage(
       onProgress,
       onTextChunk,
     });
+    clearInterval(heartbeatInterval);
     logger.debug(
       {
         success: result.success,
@@ -204,9 +230,10 @@ export async function processMessage(
     if (!result.success && sessionId && isCorruptedSessionError(result.error)) {
       logger.warn(
         { sessionId, error: result.error },
-        "Corrupted session detected — clearing and retrying",
+        "Corrupted session detected — retrying with fresh session",
       );
-      await saveSessionId(userDir, null);
+      // Don't pre-clear: preserve session on disk in case this is a false positive.
+      // If retry succeeds it will save a new session ID; if it also fails we clear below.
 
       // Update status message to inform user
       try {
@@ -228,6 +255,23 @@ export async function processMessage(
       lastProgressUpdate = Date.now();
       lastProgressText = "";
 
+      // Restart heartbeat for retry (was cleared after first call)
+      heartbeatInterval = setInterval(async () => {
+        if (Date.now() - lastProgressUpdate < 40000) return;
+        const elapsed = Math.round((Date.now() - processStart) / 1000);
+        const label = lastProgressText ? `${lastProgressText} ` : "";
+        try {
+          await ctx.api.editMessageText(
+            chatId,
+            statusMsgId,
+            `_${label}(${elapsed}s)_`,
+            { parse_mode: "Markdown" },
+          );
+        } catch {
+          // Ignore
+        }
+      }, 45000);
+
       result = await executeClaudeQuery({
         prompt: promptText,
         userDir,
@@ -236,10 +280,16 @@ export async function processMessage(
         onProgress,
         onTextChunk,
       });
+      clearInterval(heartbeatInterval);
       logger.info(
         { success: result.success, newSessionId: result.sessionId },
         "Retry after session reset",
       );
+      // If the retry also failed, clear the session to prevent a corruption loop
+      if (!result.success) {
+        await saveSessionId(userDir, null);
+        logger.warn({ userDir }, "Cleared session after failed retry");
+      }
     }
     // Auth expired — notify user to use /login
     if (!result.success && isAuthExpiredError(result.error)) {
@@ -311,6 +361,7 @@ export async function processMessage(
       );
     }
   } catch (error) {
+    if (heartbeatInterval) clearInterval(heartbeatInterval);
     logger.error({ error }, "Text handler error");
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error";
@@ -349,7 +400,11 @@ export async function textHandler(ctx: Context): Promise<void> {
 
   const trimmed = messageText.trim();
   if (trimmed === "/login" || trimmed.startsWith("/login ")) {
-    const n8nUrl = "http://100.106.8.87:5678/webhook/claude-login";
+    const config = getConfig();
+    const n8nUrl =
+      config.loginWebhookUrl ||
+      process.env.LOGIN_WEBHOOK_URL ||
+      "http://100.106.8.87:5678/webhook/claude-login";
     const parts = trimmed.split(/\s+/);
     const code = parts.length > 1 ? parts.slice(1).join("").trim() : "";
     try {
@@ -367,16 +422,21 @@ export async function textHandler(ctx: Context): Promise<void> {
           return;
         }
         await ctx.reply("Code submitted — checking authentication...");
-        // Poll n8n for result (up to 30s)
+        // Poll n8n for result (up to 30s total)
         let authResult = "";
+        const pollDeadline = Date.now() + 33000;
         for (let i = 0; i < 10; i++) {
           await new Promise((r) => setTimeout(r, 3000));
+          if (Date.now() > pollDeadline) break;
           try {
+            const ac = new AbortController();
+            const fetchTimeout = setTimeout(() => ac.abort(), 5000);
             const checkResp = await fetch(n8nUrl, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ action: "check" }),
-            });
+              signal: ac.signal,
+            }).finally(() => clearTimeout(fetchTimeout));
             if (checkResp.ok) {
               const data = (await checkResp.json()) as { text?: string };
               const status = data.text || "";

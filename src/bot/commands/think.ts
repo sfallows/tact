@@ -1,7 +1,8 @@
 import { join, resolve } from "node:path";
 import type { Context } from "grammy";
-import { executeClaudeQuery } from "../../claude/executor.js";
+import { executeClaudeQuery, isClaudeBusy } from "../../claude/executor.js";
 import { getConfig } from "../../config.js";
+import { TELEGRAM_MAX_LENGTH } from "../../constants.js";
 import { getLogger } from "../../logger.js";
 import { ensureUserSetup, getDownloadsPath } from "../../user/setup.js";
 
@@ -27,15 +28,12 @@ Your job:
 
 Be direct and specific. Don't be polite at the expense of accuracy.`;
 
-// Telegram max message length
-const TG_MAX = 4096;
-
 function splitMessage(text: string): string[] {
   const chunks: string[] = [];
   let remaining = text;
   while (remaining.length > 0) {
-    chunks.push(remaining.slice(0, TG_MAX));
-    remaining = remaining.slice(TG_MAX);
+    chunks.push(remaining.slice(0, TELEGRAM_MAX_LENGTH));
+    remaining = remaining.slice(TELEGRAM_MAX_LENGTH);
   }
   return chunks;
 }
@@ -54,6 +52,13 @@ export async function thinkHandler(ctx: Context): Promise<void> {
   if (!question) {
     await ctx.reply(
       "Usage: /think <question or topic>\n\nExample: /think Should I migrate the Pi to HDD now or wait for the fix plan?",
+    );
+    return;
+  }
+
+  if (isClaudeBusy()) {
+    await ctx.reply(
+      "Claude is busy with another request. Please wait a moment and try again.",
     );
     return;
   }
@@ -78,8 +83,7 @@ export async function thinkHandler(ctx: Context): Promise<void> {
   logger.info({ userId, question }, "/think command triggered");
 
   // --- Phase 1: Deep reasoning ---
-  const reasoningPrompt =
-    THINK_SYSTEM_PROMPT + "\n\n---\n\nQuestion: " + question;
+  const reasoningPrompt = `${THINK_SYSTEM_PROMPT}\n\n---\n\nQuestion: ${question}`;
 
   let reasoningResult = "";
   try {
@@ -98,13 +102,13 @@ export async function thinkHandler(ctx: Context): Promise<void> {
     });
 
     if (!r1.success || !r1.output) {
-      await editStatus("Reasoning phase failed: " + (r1.error ?? "no output"));
+      await editStatus(`Reasoning phase failed: ${r1.error ?? "no output"}`);
       return;
     }
     reasoningResult = r1.output;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await editStatus("Error in reasoning phase: " + msg);
+    await editStatus(`Error in reasoning phase: ${msg}`);
     return;
   }
 
@@ -135,13 +139,13 @@ export async function thinkHandler(ctx: Context): Promise<void> {
     });
 
     if (!r2.success || !r2.output) {
-      reviewResult = "(Peer review failed: " + (r2.error ?? "no output") + ")";
+      reviewResult = `(Peer review failed: ${r2.error ?? "no output"})`;
     } else {
       reviewResult = r2.output;
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    reviewResult = "(Peer review error: " + msg + ")";
+    reviewResult = `(Peer review error: ${msg})`;
   }
 
   // Delete status message

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Context } from "grammy";
@@ -67,9 +68,8 @@ export async function documentHandler(ctx: Context): Promise<void> {
 
   const mimeType = document.mime_type || "";
   const fileName = document.file_name || "document";
-  const ext = fileName.includes(".")
-    ? `.${fileName.split(".").pop()?.toLowerCase()}`
-    : "";
+  const dotIndex = fileName.lastIndexOf(".");
+  const ext = dotIndex > 0 ? fileName.slice(dotIndex).toLowerCase() : "";
 
   const isSupported =
     SUPPORTED_MIME_TYPES.includes(mimeType) ||
@@ -87,6 +87,8 @@ export async function documentHandler(ctx: Context): Promise<void> {
   const userDir = resolve(join(config.dataDir, String(userId)));
 
   try {
+    ctx.replyWithChatAction("typing").catch(() => {});
+
     await ensureUserSetup(userDir);
 
     const file = await ctx.api.getFile(document.file_id);
@@ -98,7 +100,11 @@ export async function documentHandler(ctx: Context): Promise<void> {
     }
 
     const fileUrl = `https://api.telegram.org/file/bot${config.telegram.botToken}/${filePath}`;
-    const response = await fetch(fileUrl);
+    const downloadAc = new AbortController();
+    const downloadTimeout = setTimeout(() => downloadAc.abort(), 30000);
+    const response = await fetch(fileUrl, {
+      signal: downloadAc.signal,
+    }).finally(() => clearTimeout(downloadTimeout));
     if (!response.ok) {
       await ctx.reply(
         `Failed to download file from Telegram (HTTP ${response.status}).`,
@@ -108,13 +114,14 @@ export async function documentHandler(ctx: Context): Promise<void> {
     const buffer = Buffer.from(await response.arrayBuffer());
 
     const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const uniqueName = `${randomUUID()}_${safeName}`;
     const uploadsDir = getUploadsPath(userDir);
-    const docPath = join(uploadsDir, safeName);
+    const docPath = join(uploadsDir, uniqueName);
     await writeFile(docPath, buffer);
 
     logger.debug({ path: docPath }, "Document saved");
 
-    const prompt = `Please read the file "./uploads/${safeName}" and ${caption}`;
+    const prompt = `Please read the file "./uploads/${uniqueName}" and ${caption}`;
     const sessionId = await getSessionId(userDir);
 
     const statusMsg = await ctx.reply("_Processing..._", {

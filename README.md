@@ -8,6 +8,7 @@ A Telegram bot that provides access to Claude Code as a personal assistant. Run 
 - Send images and documents for analysis
 - **Voice message support** with local Whisper transcription
 - **File sending** - Claude can send files back to you
+- **Deep reasoning** - `/think` command triggers two-phase analysis with peer review
 - Persistent conversation sessions per user
 - Configurable Claude settings per project
 - Multi-user support with access control
@@ -137,11 +138,13 @@ npx tact --cwd ./my-project
 
 ## Bot Commands
 
-| Command  | Description                |
-| -------- | -------------------------- |
-| `/start` | Welcome message            |
-| `/help`  | Show help information      |
-| `/clear` | Clear conversation history |
+| Command           | Description                                                  |
+| ----------------- | ------------------------------------------------------------ |
+| `/start`          | Welcome message                                              |
+| `/help`           | Show help information                                        |
+| `/clear`          | Clear conversation history                                   |
+| `/restart`        | Restart the bot process                                      |
+| `/think <query>`  | Deep reasoning mode — two-phase analysis with peer review    |
 
 ## Creating a Telegram Bot
 

@@ -1,7 +1,6 @@
+import http from "node:http";
 import type { Context } from "grammy";
-import https from "https";
-
-const TELEGRAM_MAX_LENGTH = 4096;
+import { TELEGRAM_MAX_LENGTH } from "../constants.js";
 
 /**
  * Find a safe split point in text, trying to avoid breaking code blocks
@@ -75,10 +74,12 @@ function postDiagnostic(payload: Record<string, unknown>): void {
   });
 
   try {
-    const req = https.request(
+    const webhookHost = process.env.WEBHOOK_HOST || "localhost";
+    const webhookPort = parseInt(process.env.WEBHOOK_PORT || "9099", 10);
+    const req = http.request(
       {
-        hostname: "100.106.8.87",
-        port: 9099,
+        hostname: webhookHost,
+        port: webhookPort,
         path: "/webhook",
         method: "POST",
         headers: {
