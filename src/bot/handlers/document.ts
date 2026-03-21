@@ -2,9 +2,12 @@ import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Context } from "grammy";
-import { executeClaudeQuery } from "../../claude/executor.js";
-import { parseClaudeOutput } from "../../claude/parser.js";
 import { getConfig } from "../../config.js";
+import {
+  MAX_DOCUMENT_BYTES,
+  SUPPORTED_EXTENSIONS,
+  SUPPORTED_MIME_TYPES,
+} from "../../constants.js";
 import { getLogger } from "../../logger.js";
 import { sendChunkedResponse } from "../../telegram/chunker.js";
 import { sendDownloadFiles } from "../../telegram/fileSender.js";
@@ -13,44 +16,8 @@ import {
   getDownloadsPath,
   getSessionId,
   getUploadsPath,
-  saveSessionId,
 } from "../../user/setup.js";
-import { isCorruptedSessionError } from "../sessionRecovery.js";
-
-const SUPPORTED_MIME_TYPES = [
-  "application/pdf",
-  "text/plain",
-  "text/markdown",
-  "text/csv",
-  "application/json",
-  "application/xml",
-  "text/html",
-  "image/jpeg",
-  "image/png",
-  "image/gif",
-  "image/webp",
-];
-
-const SUPPORTED_EXTENSIONS = [
-  ".pdf",
-  ".txt",
-  ".md",
-  ".csv",
-  ".json",
-  ".xml",
-  ".html",
-  ".js",
-  ".ts",
-  ".py",
-  ".go",
-  ".rs",
-  ".java",
-  ".jpg",
-  ".jpeg",
-  ".png",
-  ".gif",
-  ".webp",
-];
+import { executeWithRecovery } from "../sessionRecovery.js";
 
 /**
  * Handle document messages (PDFs, images, code files, etc.)
@@ -77,7 +44,15 @@ export async function documentHandler(ctx: Context): Promise<void> {
 
   if (!isSupported) {
     await ctx.reply(
-      `Unsupported file type. Supported: PDF, images, text, and code files.`,
+      "Unsupported file type. Supported: PDF, images, text, and code files.",
+    );
+    return;
+  }
+
+  // Check file size before downloading
+  if (document.file_size && document.file_size > MAX_DOCUMENT_BYTES) {
+    await ctx.reply(
+      `File too large (${(document.file_size / 1024 / 1024).toFixed(1)} MB). Max is ${MAX_DOCUMENT_BYTES / 1024 / 1024} MB.`,
     );
     return;
   }
@@ -151,13 +126,10 @@ export async function documentHandler(ctx: Context): Promise<void> {
     const downloadsPath = getDownloadsPath(userDir);
 
     logger.debug("Executing Claude query with document");
-    let result = await executeClaudeQuery({
-      prompt,
-      userDir,
-      downloadsPath,
+    const parsed = await executeWithRecovery(
+      { prompt, userDir, downloadsPath, onProgress },
       sessionId,
-      onProgress,
-    });
+    );
 
     try {
       await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
@@ -165,31 +137,8 @@ export async function documentHandler(ctx: Context): Promise<void> {
       // Ignore delete errors
     }
 
-    // Auto-recover from corrupted sessions
-    if (!result.success && sessionId && isCorruptedSessionError(result.error)) {
-      logger.warn(
-        { sessionId, error: result.error },
-        "Corrupted session detected in document handler — clearing and retrying",
-      );
-      await saveSessionId(userDir, null);
-      result = await executeClaudeQuery({
-        prompt,
-        userDir,
-        downloadsPath,
-        sessionId: null,
-        onProgress,
-      });
-    }
-
-    const parsed = parseClaudeOutput(result);
-
-    if (parsed.sessionId && !isCorruptedSessionError(result.error)) {
-      await saveSessionId(userDir, parsed.sessionId);
-    }
-
     await sendChunkedResponse(ctx, parsed.text);
 
-    // Send any files from downloads folder
     const filesSent = await sendDownloadFiles(ctx, userDir);
     if (filesSent > 0) {
       logger.info({ filesSent }, "Sent download files to user");

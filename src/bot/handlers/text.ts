@@ -15,6 +15,7 @@ import {
   saveSessionId,
 } from "../../user/setup.js";
 import { drainAll } from "../../webhook/queue.js";
+import { startHeartbeat } from "../heartbeat.js";
 import { bufferMessage } from "../messageBuffer.js";
 import {
   isAuthExpiredError,
@@ -84,7 +85,7 @@ export async function processMessage(
   const userDir = resolve(join(config.dataDir, String(userId)));
 
   // Declared outside try so catch can clear it on any error path
-  let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
+  let stopHeartbeat: (() => void) | undefined;
 
   try {
     // Acknowledge receipt immediately — expires after 5s but bridges gap before "Processing..." appears
@@ -190,21 +191,11 @@ export async function processMessage(
 
     // Heartbeat: edit status message every 15s if no recent progress update
     const processStart = Date.now();
-    heartbeatInterval = setInterval(async () => {
-      if (Date.now() - lastProgressUpdate < 12000) return; // recent update, skip
-      const elapsed = Math.round((Date.now() - processStart) / 1000);
-      const label = lastProgressText ? `${lastProgressText} ` : "Working ";
-      try {
-        await ctx.api.editMessageText(
-          chatId,
-          statusMsgId,
-          `_${label}(${elapsed}s)_`,
-          { parse_mode: "Markdown" },
-        );
-      } catch {
-        // Ignore
-      }
-    }, 15000);
+    let stopHeartbeat = startHeartbeat(ctx, chatId, statusMsgId, () => ({
+      lastProgressUpdate,
+      lastProgressText,
+      processStart,
+    }));
 
     const downloadsPath = getDownloadsPath(userDir);
 
@@ -217,7 +208,7 @@ export async function processMessage(
       onProgress,
       onTextChunk,
     });
-    clearInterval(heartbeatInterval);
+    stopHeartbeat();
     logger.debug(
       {
         success: result.success,
@@ -233,10 +224,7 @@ export async function processMessage(
         { sessionId, error: result.error },
         "Corrupted session detected — retrying with fresh session",
       );
-      // Don't pre-clear: preserve session on disk in case this is a false positive.
-      // If retry succeeds it will save a new session ID; if it also fails we clear below.
 
-      // Update status message to inform user
       try {
         await ctx.api.editMessageText(
           chatId,
@@ -248,7 +236,6 @@ export async function processMessage(
         // Ignore edit errors
       }
 
-      // Reset streaming state for retry
       streamedText = "";
       lastStreamUpdate = 0;
       streamUpdatePending = false;
@@ -256,22 +243,11 @@ export async function processMessage(
       lastProgressUpdate = Date.now();
       lastProgressText = "";
 
-      // Restart heartbeat for retry (was cleared after first call)
-      heartbeatInterval = setInterval(async () => {
-        if (Date.now() - lastProgressUpdate < 12000) return;
-        const elapsed = Math.round((Date.now() - processStart) / 1000);
-        const label = lastProgressText ? `${lastProgressText} ` : "Working ";
-        try {
-          await ctx.api.editMessageText(
-            chatId,
-            statusMsgId,
-            `_${label}(${elapsed}s)_`,
-            { parse_mode: "Markdown" },
-          );
-        } catch {
-          // Ignore
-        }
-      }, 15000);
+      stopHeartbeat = startHeartbeat(ctx, chatId, statusMsgId, () => ({
+        lastProgressUpdate,
+        lastProgressText,
+        processStart,
+      }));
 
       result = await executeClaudeQuery({
         prompt: promptText,
@@ -281,12 +257,11 @@ export async function processMessage(
         onProgress,
         onTextChunk,
       });
-      clearInterval(heartbeatInterval);
+      stopHeartbeat();
       logger.info(
         { success: result.success, newSessionId: result.sessionId },
         "Retry after session reset",
       );
-      // If the retry also failed, clear the session to prevent a corruption loop
       if (!result.success) {
         await saveSessionId(userDir, null);
         logger.warn({ userDir }, "Cleared session after failed retry");
@@ -323,21 +298,11 @@ export async function processMessage(
       lastProgressUpdate = Date.now();
       lastProgressText = "";
 
-      heartbeatInterval = setInterval(async () => {
-        if (Date.now() - lastProgressUpdate < 12000) return;
-        const elapsed = Math.round((Date.now() - processStart) / 1000);
-        const label = lastProgressText ? `${lastProgressText} ` : "Working ";
-        try {
-          await ctx.api.editMessageText(
-            chatId,
-            statusMsgId,
-            `_${label}(${elapsed}s)_`,
-            { parse_mode: "Markdown" },
-          );
-        } catch {
-          // Ignore
-        }
-      }, 15000);
+      stopHeartbeat = startHeartbeat(ctx, chatId, statusMsgId, () => ({
+        lastProgressUpdate,
+        lastProgressText,
+        processStart,
+      }));
 
       result = await executeClaudeQuery({
         prompt: promptText,
@@ -347,7 +312,7 @@ export async function processMessage(
         onProgress,
         onTextChunk,
       });
-      clearInterval(heartbeatInterval);
+      stopHeartbeat();
       logger.info(
         { success: result.success, newSessionId: result.sessionId },
         "Retry after session clear",
@@ -424,7 +389,7 @@ export async function processMessage(
       );
     }
   } catch (error) {
-    if (heartbeatInterval) clearInterval(heartbeatInterval);
+    if (stopHeartbeat) stopHeartbeat();
     logger.error({ error }, "Text handler error");
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error";
@@ -464,10 +429,13 @@ export async function textHandler(ctx: Context): Promise<void> {
   const trimmed = messageText.trim();
   if (trimmed === "/login" || trimmed.startsWith("/login ")) {
     const config = getConfig();
-    const n8nUrl =
-      config.loginWebhookUrl ||
-      process.env.LOGIN_WEBHOOK_URL ||
-      "http://100.106.8.87:5678/webhook/claude-login";
+    const n8nUrl = config.loginWebhookUrl || process.env.LOGIN_WEBHOOK_URL;
+    if (!n8nUrl) {
+      await ctx.reply(
+        "loginWebhookUrl is not configured. Set it in tact.config.json or LOGIN_WEBHOOK_URL env var.",
+      );
+      return;
+    }
     const parts = trimmed.split(/\s+/);
     const code = parts.length > 1 ? parts.slice(1).join("").trim() : "";
     try {

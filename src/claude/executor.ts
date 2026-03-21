@@ -34,6 +34,17 @@ export function isClaudeBusy(userDir?: string): boolean {
   return _busyUsers.size > 0;
 }
 
+// --- Last invocation state (for /status) ---
+let _lastExitCode: number | null = null;
+let _lastInvokedAt: number | null = null;
+
+export function getLastExitCode(): number | null {
+  return _lastExitCode;
+}
+export function getLastInvokedAt(): number | null {
+  return _lastInvokedAt;
+}
+
 /**
  * Execute a Claude query using the CLI with streaming progress
  */
@@ -255,6 +266,8 @@ export async function executeClaudeQuery(
     proc.on("close", (code) => {
       // Clear the inactivity timer
       if (inactivityTimer) clearTimeout(inactivityTimer);
+      _lastExitCode = code;
+      _lastInvokedAt = Date.now();
 
       logger.debug({ code, killed }, "Claude process closed");
 

@@ -1,3 +1,40 @@
+import { type ExecuteOptions, executeClaudeQuery } from "../claude/executor.js";
+import { type ParsedResponse, parseClaudeOutput } from "../claude/parser.js";
+import { getLogger } from "../logger.js";
+import { saveSessionId } from "../user/setup.js";
+
+/**
+ * Execute a Claude query with automatic corrupted-session recovery.
+ * On detection of a corrupted session error, clears the session and retries once.
+ * Saves the new session ID on success.
+ */
+export async function executeWithRecovery(
+  options: Omit<ExecuteOptions, "sessionId">,
+  sessionId: string | null,
+): Promise<ParsedResponse> {
+  const logger = getLogger();
+  const { userDir } = options;
+
+  let result = await executeClaudeQuery({ ...options, sessionId });
+
+  if (!result.success && sessionId && isCorruptedSessionError(result.error)) {
+    logger.warn(
+      { sessionId, error: result.error },
+      "Corrupted session — clearing and retrying with fresh session",
+    );
+    await saveSessionId(userDir, null);
+    result = await executeClaudeQuery({ ...options, sessionId: null });
+  }
+
+  const parsed = parseClaudeOutput(result);
+
+  if (parsed.sessionId && !isCorruptedSessionError(result.error)) {
+    await saveSessionId(userDir, parsed.sessionId);
+  }
+
+  return parsed;
+}
+
 /**
  * Detect if an error indicates a corrupted session (mismatched tool_use/tool_result blocks).
  * These happen when a session is killed mid-tool-use and the conversation history becomes invalid.

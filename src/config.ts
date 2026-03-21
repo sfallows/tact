@@ -64,9 +64,12 @@ const ConfigSchema = z.object({
     command: z.string().default("claude"),
   }),
   messageBufferMs: z.number().nonnegative().default(0),
-  claudeTimeoutSeconds: z.number().positive().default(600).optional(),
+  claudeTimeoutSeconds: z.number().nonnegative().default(600).optional(),
   webhookPort: z.number().positive().default(9099).optional(),
   loginWebhookUrl: z.string().url().optional(),
+  timezone: z.string().default("America/Chicago"),
+  vaultPath: z.string().optional(),
+  tasksPath: z.string().optional(),
   transcription: z
     .object({
       model: TranscriptionModelSchema.default("base.en"),
@@ -113,9 +116,12 @@ const ConfigFileSchema = z
       .partial()
       .optional(),
     messageBufferMs: z.number().nonnegative().optional(),
-    claudeTimeoutSeconds: z.number().positive().optional(),
+    claudeTimeoutSeconds: z.number().nonnegative().optional(),
     webhookPort: z.number().positive().optional(),
     loginWebhookUrl: z.string().url().optional(),
+    timezone: z.string().optional(),
+    vaultPath: z.string().optional(),
+    tasksPath: z.string().optional(),
     transcription: z
       .object({
         model: TranscriptionModelSchema.default("base.en"),
@@ -215,6 +221,9 @@ export function loadConfig(): Config {
       : (fileConfig.webhookPort ?? 9099),
     loginWebhookUrl:
       process.env.LOGIN_WEBHOOK_URL || fileConfig.loginWebhookUrl,
+    timezone: process.env.TIMEZONE || fileConfig.timezone || "America/Chicago",
+    vaultPath: process.env.VAULT_PATH || fileConfig.vaultPath,
+    tasksPath: process.env.TASKS_PATH || fileConfig.tasksPath,
     transcription: {
       model:
         process.env.WHISPER_MODEL ||

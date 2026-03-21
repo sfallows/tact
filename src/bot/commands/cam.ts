@@ -13,6 +13,11 @@ const execFileAsync = promisify(execFile);
  * /cam — capture the current quint screen and send as a photo
  */
 export async function camHandler(ctx: Context): Promise<void> {
+  if (process.platform !== "darwin") {
+    await ctx.reply("/cam is only supported on macOS.");
+    return;
+  }
+
   const logger = getLogger();
   const screenshotPath = join("/tmp", `tact-screenshot-${randomUUID()}.png`);
 

@@ -1,46 +1,27 @@
 import type { Context } from "grammy";
+import { getConfig } from "../../config.js";
 import { getLogger } from "../../logger.js";
 import { createReminder } from "../../reminder/index.js";
 
-const TZ = "America/Chicago";
-
-/**
- * Parse a natural language time expression relative to `now`.
- *
- * Supported patterns (all case-insensitive):
- *   "in 30 minutes" / "in 2 hours" / "in 3 days" / "in 1 week"
- *   "at 5pm" / "at 17:30" / "at 9:30am"
- *   "tomorrow" (= tomorrow at 9:00 AM CT)
- *   "tomorrow morning" (9 AM) / "tomorrow afternoon" (2 PM)
- *   "tomorrow evening" / "tomorrow night" (7 PM)
- *   "tomorrow at 3pm" / "tomorrow at 14:00"
- *
- * Returns fire time as a Date, or null if not recognized.
- * The remaining string (the reminder message) is everything before the time expression.
- */
 interface ParsedReminder {
   message: string;
   fireAt: Date;
-}
-
-function _nowCT(): Date {
-  // Get current CT date components
-  return new Date();
+  recurMs?: number;
 }
 
 /**
- * Build a Date in CT for today at a specific hour/minute.
- * If the resulting time is in the past, rolls to tomorrow.
+ * Build a Date in the configured timezone for a specific hour/minute.
+ * If the resulting time is in the past, rolls to tomorrow (unless allowPast=true).
  */
-function todayAtCT(
+function todayAtTZ(
   hour: number,
   minute: number,
   base: Date,
+  tz: string,
   allowPast = false,
 ): Date {
-  // Format base date as CT date parts
   const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: TZ,
+    timeZone: tz,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -50,37 +31,24 @@ function todayAtCT(
   const month = Number(parts.find((p) => p.type === "month")!.value) - 1;
   const day = Number(parts.find((p) => p.type === "day")!.value);
 
-  // Construct as UTC by computing offset
   const candidate = new Date(
     `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00`,
   );
-  // The above is parsed as local time — adjust to CT
-  // We convert via UTC: get the CT offset at this moment and apply it
-  const ctOffset = getCTOffsetMinutes(candidate);
-  const utcMs = candidate.getTime() - ctOffset * 60_000;
-  const result = new Date(utcMs);
+  const offset = getTZOffsetMinutes(candidate, tz);
+  const result = new Date(candidate.getTime() - offset * 60_000);
 
   if (!allowPast && result <= base) {
-    // Roll to same time tomorrow
     return new Date(result.getTime() + 24 * 3600_000);
   }
   return result;
 }
 
-/**
- * Return CT offset in minutes (e.g., -360 for CST, -300 for CDT).
- */
-function getCTOffsetMinutes(date: Date): number {
+function getTZOffsetMinutes(date: Date, tz: string): number {
   const utcStr = date.toLocaleString("en-US", { timeZone: "UTC" });
-  const ctStr = date.toLocaleString("en-US", { timeZone: TZ });
-  const utcDate = new Date(utcStr);
-  const ctDate = new Date(ctStr);
-  return (ctDate.getTime() - utcDate.getTime()) / 60_000;
+  const tzStr = date.toLocaleString("en-US", { timeZone: tz });
+  return (new Date(tzStr).getTime() - new Date(utcStr).getTime()) / 60_000;
 }
 
-/**
- * Parse "H:MMam", "Hpm", "H:MM", etc. into { hour, minute }.
- */
 function parseTimeStr(
   timeStr: string,
 ): { hour: number; minute: number } | null {
@@ -89,21 +57,80 @@ function parseTimeStr(
   let hour = parseInt(m[1], 10);
   const minute = m[2] ? parseInt(m[2], 10) : 0;
   const period = m[3]?.toLowerCase();
-
   if (period === "pm" && hour !== 12) hour += 12;
   if (period === "am" && hour === 12) hour = 0;
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
-
   return { hour, minute };
 }
 
 export function parseReminderInput(
   input: string,
   now: Date = new Date(),
+  tz = "America/Chicago",
 ): ParsedReminder | null {
   const text = input.trim();
 
-  // --- Pattern: "<msg> in <n> <unit>" ---
+  // --- Recurring: "<msg> every day [at <time>]" ---
+  const everyDayAtMatch = text.match(
+    /^(.+?)\s+every\s+day\s+at\s+([\d:apm]+)$/i,
+  );
+  if (everyDayAtMatch) {
+    const message = everyDayAtMatch[1].trim();
+    const parsed = parseTimeStr(everyDayAtMatch[2]);
+    if (parsed) {
+      const fireAt = todayAtTZ(parsed.hour, parsed.minute, now, tz);
+      return { message, fireAt, recurMs: 24 * 3600_000 };
+    }
+  }
+
+  // --- Recurring: "<msg> every day" (9am default) ---
+  const everyDayMatch = text.match(/^(.+?)\s+every\s+day$/i);
+  if (everyDayMatch) {
+    const message = everyDayMatch[1].trim();
+    const fireAt = todayAtTZ(9, 0, now, tz);
+    return { message, fireAt, recurMs: 24 * 3600_000 };
+  }
+
+  // --- Recurring: "<msg> every week [at <time>]" ---
+  const everyWeekAtMatch = text.match(
+    /^(.+?)\s+every\s+week\s+at\s+([\d:apm]+)$/i,
+  );
+  if (everyWeekAtMatch) {
+    const message = everyWeekAtMatch[1].trim();
+    const parsed = parseTimeStr(everyWeekAtMatch[2]);
+    if (parsed) {
+      const fireAt = todayAtTZ(parsed.hour, parsed.minute, now, tz);
+      return { message, fireAt, recurMs: 7 * 24 * 3600_000 };
+    }
+  }
+
+  // --- Recurring: "<msg> every week" ---
+  const everyWeekMatch = text.match(/^(.+?)\s+every\s+week$/i);
+  if (everyWeekMatch) {
+    const message = everyWeekMatch[1].trim();
+    const fireAt = new Date(now.getTime() + 7 * 24 * 3600_000);
+    return { message, fireAt, recurMs: 7 * 24 * 3600_000 };
+  }
+
+  // --- Recurring: "<msg> every <n> minutes/hours/days" ---
+  const everyIntervalMatch = text.match(
+    /^(.+?)\s+every\s+(\d+)\s+(minutes?|hours?|days?)$/i,
+  );
+  if (everyIntervalMatch) {
+    const message = everyIntervalMatch[1].trim();
+    const amount = parseInt(everyIntervalMatch[2], 10);
+    const unit = everyIntervalMatch[3].toLowerCase();
+    let recurMs = 0;
+    if (unit.startsWith("minute")) recurMs = amount * 60_000;
+    else if (unit.startsWith("hour")) recurMs = amount * 3600_000;
+    else if (unit.startsWith("day")) recurMs = amount * 24 * 3600_000;
+    if (recurMs > 0) {
+      const fireAt = new Date(now.getTime() + recurMs);
+      return { message, fireAt, recurMs };
+    }
+  }
+
+  // --- One-time: "<msg> in <n> <unit>" ---
   const inMatch = text.match(
     /^(.+?)\s+in\s+(\d+)\s+(minutes?|hours?|days?|weeks?)$/i,
   );
@@ -122,19 +149,19 @@ export function parseReminderInput(
     return { message, fireAt };
   }
 
-  // --- Pattern: "<msg> tomorrow at <time>" ---
+  // --- One-time: "<msg> tomorrow at <time>" ---
   const tomorrowAtMatch = text.match(/^(.+?)\s+tomorrow\s+at\s+([\d:apm]+)$/i);
   if (tomorrowAtMatch) {
     const message = tomorrowAtMatch[1].trim();
     const parsed = parseTimeStr(tomorrowAtMatch[2]);
     if (parsed) {
       const tomorrow = new Date(now.getTime() + 24 * 3600_000);
-      const fireAt = todayAtCT(parsed.hour, parsed.minute, tomorrow, true);
+      const fireAt = todayAtTZ(parsed.hour, parsed.minute, tomorrow, tz, true);
       return { message, fireAt };
     }
   }
 
-  // --- Pattern: "<msg> tomorrow morning/afternoon/evening/night" ---
+  // --- One-time: "<msg> tomorrow morning/afternoon/evening/night" ---
   const tomorrowPeriodMatch = text.match(
     /^(.+?)\s+tomorrow\s+(morning|afternoon|evening|night)$/i,
   );
@@ -148,26 +175,26 @@ export function parseReminderInput(
       night: 21,
     };
     const tomorrow = new Date(now.getTime() + 24 * 3600_000);
-    const fireAt = todayAtCT(hourMap[period], 0, tomorrow, true);
+    const fireAt = todayAtTZ(hourMap[period], 0, tomorrow, tz, true);
     return { message, fireAt };
   }
 
-  // --- Pattern: "<msg> tomorrow" (= tomorrow 9am) ---
+  // --- One-time: "<msg> tomorrow" (= tomorrow 9am) ---
   const tomorrowMatch = text.match(/^(.+?)\s+tomorrow$/i);
   if (tomorrowMatch) {
     const message = tomorrowMatch[1].trim();
     const tomorrow = new Date(now.getTime() + 24 * 3600_000);
-    const fireAt = todayAtCT(9, 0, tomorrow, true);
+    const fireAt = todayAtTZ(9, 0, tomorrow, tz, true);
     return { message, fireAt };
   }
 
-  // --- Pattern: "<msg> at <time>" (today or next occurrence) ---
+  // --- One-time: "<msg> at <time>" ---
   const atMatch = text.match(/^(.+?)\s+at\s+([\d:apm]+)$/i);
   if (atMatch) {
     const message = atMatch[1].trim();
     const parsed = parseTimeStr(atMatch[2]);
     if (parsed) {
-      const fireAt = todayAtCT(parsed.hour, parsed.minute, now);
+      const fireAt = todayAtTZ(parsed.hour, parsed.minute, now, tz);
       return { message, fireAt };
     }
   }
@@ -175,9 +202,9 @@ export function parseReminderInput(
   return null;
 }
 
-function formatFireTime(fireAt: Date): string {
+function formatFireTime(fireAt: Date, tz: string): string {
   return fireAt.toLocaleString("en-US", {
-    timeZone: TZ,
+    timeZone: tz,
     weekday: "short",
     month: "short",
     day: "numeric",
@@ -189,6 +216,8 @@ function formatFireTime(fireAt: Date): string {
 
 export async function remindHandler(ctx: Context): Promise<void> {
   const logger = getLogger();
+  const config = getConfig();
+  const tz = config.timezone;
   const userId = ctx.from?.id;
   const chatId = ctx.chat?.id;
 
@@ -205,33 +234,61 @@ export async function remindHandler(ctx: Context): Promise<void> {
         "  /remind take out trash in 30 minutes\n" +
         "  /remind call dentist tomorrow at 3pm\n" +
         "  /remind check backups at 9am\n" +
-        "  /remind standup tomorrow morning\n" +
+        "  /remind standup every day at 9am\n" +
+        "  /remind review metrics every week\n" +
         "  /remind review PR in 2 hours",
     );
     return;
   }
 
-  const parsed = parseReminderInput(input);
+  const parsed = parseReminderInput(input, new Date(), tz);
   if (!parsed) {
     await ctx.reply(
       "Couldn't parse the time from that. Try:\n" +
         "  /remind <message> in <n> minutes/hours/days\n" +
         "  /remind <message> at <time>\n" +
-        "  /remind <message> tomorrow [at <time>|morning|afternoon|evening]",
+        "  /remind <message> tomorrow [at <time>|morning|afternoon|evening]\n" +
+        "  /remind <message> every day [at <time>]\n" +
+        "  /remind <message> every week",
     );
     return;
   }
 
   try {
-    const id = createReminder(userId, chatId, parsed.message, parsed.fireAt);
-    const formatted = formatFireTime(parsed.fireAt);
-    await ctx.reply(`Reminder set for ${formatted} CT\n"${parsed.message}"`);
+    const id = createReminder(
+      userId,
+      chatId,
+      parsed.message,
+      parsed.fireAt,
+      parsed.recurMs,
+    );
+    const formatted = formatFireTime(parsed.fireAt, tz);
+    const recurSuffix = parsed.recurMs
+      ? ` (repeats every ${formatRecurInterval(parsed.recurMs)})`
+      : "";
+    await ctx.reply(
+      `Reminder set for ${formatted}${recurSuffix}\n"${parsed.message}"`,
+    );
     logger.info(
-      { id, message: parsed.message, fireAt: parsed.fireAt.toISOString() },
+      {
+        id,
+        message: parsed.message,
+        fireAt: parsed.fireAt.toISOString(),
+        recurMs: parsed.recurMs,
+      },
       "Reminder created",
     );
   } catch (err) {
     logger.error({ error: err }, "Failed to create reminder");
     await ctx.reply("Failed to save reminder.");
   }
+}
+
+function formatRecurInterval(ms: number): string {
+  if (ms === 24 * 3600_000) return "day";
+  if (ms === 7 * 24 * 3600_000) return "week";
+  const hours = ms / 3600_000;
+  if (Number.isInteger(hours)) return `${hours} hour${hours !== 1 ? "s" : ""}`;
+  const minutes = ms / 60_000;
+  return `${minutes} minute${minutes !== 1 ? "s" : ""}`;
 }

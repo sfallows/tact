@@ -1,4 +1,4 @@
-import { appendFile, stat } from "node:fs/promises";
+import { appendFile, readdir, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { getWorkingDirectory } from "../config.js";
 
@@ -69,6 +69,27 @@ async function ensureHeader(path: string): Promise<void> {
     })}\n\n`;
     await appendFile(path, header, "utf-8");
   }
+}
+
+/**
+ * Delete chat log files older than `days` days. Fire-and-forget — never throws.
+ */
+export function rotateChatLogs(days = 90): void {
+  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+  const tactDir = join(getWorkingDirectory(), ".tact");
+  (async () => {
+    const files = await readdir(tactDir).catch(() => [] as string[]);
+    for (const file of files) {
+      if (!file.startsWith("chat-log-") || !file.endsWith(".md")) continue;
+      const filePath = join(tactDir, file);
+      try {
+        const s = await stat(filePath);
+        if (s.mtimeMs < cutoffMs) await unlink(filePath);
+      } catch {
+        // Ignore
+      }
+    }
+  })().catch(() => {});
 }
 
 /**

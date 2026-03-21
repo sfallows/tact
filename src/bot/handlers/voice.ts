@@ -5,9 +5,8 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { Context } from "grammy";
 import { appendChatLog } from "../../chatlog/index.js";
-import { executeClaudeQuery } from "../../claude/executor.js";
-import { parseClaudeOutput } from "../../claude/parser.js";
 import { getConfig } from "../../config.js";
+import { MAX_VOICE_BYTES } from "../../constants.js";
 import { getLogger } from "../../logger.js";
 import { sendChunkedResponse } from "../../telegram/chunker.js";
 import { sendDownloadFiles } from "../../telegram/fileSender.js";
@@ -17,9 +16,8 @@ import {
   getDownloadsPath,
   getSessionId,
   getUploadsPath,
-  saveSessionId,
 } from "../../user/setup.js";
-import { isCorruptedSessionError } from "../sessionRecovery.js";
+import { executeWithRecovery } from "../sessionRecovery.js";
 
 const execAsync = promisify(exec);
 
@@ -58,6 +56,14 @@ export async function voiceHandler(ctx: Context): Promise<void> {
     return;
   }
 
+  // Check file size before downloading
+  if (voice.file_size && voice.file_size > MAX_VOICE_BYTES) {
+    await ctx.reply(
+      `Voice message too large (${(voice.file_size / 1024 / 1024).toFixed(1)} MB). Max is ${MAX_VOICE_BYTES / 1024 / 1024} MB.`,
+    );
+    return;
+  }
+
   logger.debug(
     { userId, duration: voice.duration, fileSize: voice.file_size },
     "Voice message received",
@@ -70,7 +76,6 @@ export async function voiceHandler(ctx: Context): Promise<void> {
 
     await ensureUserSetup(userDir);
 
-    // Download voice file from Telegram
     const file = await ctx.api.getFile(voice.file_id);
     const filePath = file.file_path;
 
@@ -93,7 +98,6 @@ export async function voiceHandler(ctx: Context): Promise<void> {
     }
     const buffer = Buffer.from(await response.arrayBuffer());
 
-    // Save original OGA file
     const id = randomUUID();
     const uploadsDir = getUploadsPath(userDir);
     const ogaPath = join(uploadsDir, `voice_${id}.oga`);
@@ -102,15 +106,12 @@ export async function voiceHandler(ctx: Context): Promise<void> {
 
     logger.debug({ path: ogaPath }, "Voice file saved");
 
-    // Send transcribing status
     const statusMsg = await ctx.reply("_Transcribing voice message..._", {
       parse_mode: "Markdown",
     });
 
-    // Convert to WAV (Whisper requires WAV/MP3 input)
     await convertToWav(ogaPath, wavPath);
 
-    // Transcribe with local Whisper
     const transcription = await transcribeAudio(wavPath);
 
     if (transcription.text) {
@@ -125,7 +126,6 @@ export async function voiceHandler(ctx: Context): Promise<void> {
       return;
     }
 
-    // Optionally show transcription to user
     if (config.transcription?.showTranscription) {
       try {
         await ctx.api.editMessageText(
@@ -150,7 +150,6 @@ export async function voiceHandler(ctx: Context): Promise<void> {
       }
     }
 
-    // Clean up temporary files
     try {
       await unlink(ogaPath);
       await unlink(wavPath);
@@ -158,7 +157,6 @@ export async function voiceHandler(ctx: Context): Promise<void> {
       // Ignore cleanup errors
     }
 
-    // Send transcribed text to Claude
     const sessionId = await getSessionId(userDir);
     let lastProgressUpdate = Date.now();
     let lastProgressText = "Processing...";
@@ -187,46 +185,19 @@ export async function voiceHandler(ctx: Context): Promise<void> {
       { transcription: transcription.text },
       "Executing Claude query",
     );
-    let result = await executeClaudeQuery({
-      prompt: transcription.text,
-      userDir,
-      downloadsPath,
+    const parsed = await executeWithRecovery(
+      { prompt: transcription.text, userDir, downloadsPath, onProgress },
       sessionId,
-      onProgress,
-    });
+    );
 
-    // Delete status message
     try {
       await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
     } catch {
       // Ignore delete errors
     }
 
-    // Auto-recover from corrupted sessions
-    if (!result.success && sessionId && isCorruptedSessionError(result.error)) {
-      logger.warn(
-        { sessionId, error: result.error },
-        "Corrupted session detected in voice handler — clearing and retrying",
-      );
-      await saveSessionId(userDir, null);
-      result = await executeClaudeQuery({
-        prompt: transcription.text,
-        userDir,
-        downloadsPath,
-        sessionId: null,
-        onProgress,
-      });
-    }
-
-    const parsed = parseClaudeOutput(result);
-
-    if (parsed.sessionId && !isCorruptedSessionError(result.error)) {
-      await saveSessionId(userDir, parsed.sessionId);
-    }
-
     await sendChunkedResponse(ctx, parsed.text);
 
-    // Send any files from downloads folder
     const filesSent = await sendDownloadFiles(ctx, userDir);
     if (filesSent > 0) {
       logger.info({ filesSent }, "Sent download files to user");

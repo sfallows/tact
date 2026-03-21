@@ -5,11 +5,16 @@ import { join, resolve } from "node:path";
 import { Bot, type Context } from "grammy";
 import { camHandler } from "./bot/commands/cam.js";
 import { clearHandler } from "./bot/commands/clear.js";
+import { fileHandler } from "./bot/commands/file.js";
 import { helpHandler } from "./bot/commands/help.js";
+import { noteHandler } from "./bot/commands/note.js";
 import { remindHandler } from "./bot/commands/remind.js";
 import { restartHandler } from "./bot/commands/restart.js";
+import { searchHandler } from "./bot/commands/search.js";
+import { searchLogHandler } from "./bot/commands/searchLog.js";
 import { startHandler } from "./bot/commands/start.js";
 import { statusHandler } from "./bot/commands/status.js";
+import { tasksHandler } from "./bot/commands/tasks.js";
 import { thinkHandler } from "./bot/commands/think.js";
 import {
   documentHandler,
@@ -21,14 +26,18 @@ import { processMessage } from "./bot/handlers/text.js";
 import { initMessageBuffer } from "./bot/messageBuffer.js";
 import { authMiddleware } from "./bot/middleware/auth.js";
 import { rateLimitMiddleware } from "./bot/middleware/rateLimit.js";
-import { appendChatLog } from "./chatlog/index.js";
+import { appendChatLog, rotateChatLogs } from "./chatlog/index.js";
 import { getConfig, getWorkingDirectory } from "./config.js";
 import { getLogger, initLogger } from "./logger.js";
 import {
   startNotificationPoller,
   stopNotificationPoller,
 } from "./notification/queue.js";
-import { startReminderPoller, stopReminderPoller } from "./reminder/index.js";
+import {
+  ackReminderByMsgId,
+  startReminderPoller,
+  stopReminderPoller,
+} from "./reminder/index.js";
 import { clearUserData } from "./user/setup.js";
 import { startQueuePoller, stopQueuePoller } from "./webhook/queue.js";
 import { startWebhookServer } from "./webhook/server.js";
@@ -65,7 +74,14 @@ async function handleLogin(
   const args = (
     typeof ctx.match === "string" ? ctx.match : (ctx.match?.[0] ?? "")
   ).trim();
-  const n8nUrl = "http://100.106.8.87:5678/webhook/claude-login";
+  const n8nUrl = config.loginWebhookUrl;
+
+  if (!n8nUrl) {
+    await ctx.reply(
+      "loginWebhookUrl is not configured. Set it in tact.config.json or LOGIN_WEBHOOK_URL env var.",
+    );
+    return;
+  }
 
   // On /login start: clear the stale session so next message starts fresh
   if (!args && userId) {
@@ -112,6 +128,9 @@ export async function startBot(): Promise<void> {
 
   logger.info({ workingDir }, "Working directory");
   logger.info({ dataDir: config.dataDir }, "Data directory");
+
+  // Rotate old chat logs on startup (delete logs > 90 days)
+  rotateChatLogs(90);
 
   // Initialize message buffer
   initMessageBuffer(config.messageBufferMs, processMessage);
@@ -172,12 +191,12 @@ export async function startBot(): Promise<void> {
     await restartHandler(ctx);
   });
 
-  // /status — show runtime status (uptime, Claude state, queue depths)
+  // /status — show runtime status
   bot.command("status", async (ctx) => {
     await statusHandler(ctx);
   });
 
-  // /think — deep reasoning + peer review (two independent Claude calls)
+  // /think — deep reasoning + peer review
   bot.command("think", async (ctx) => {
     await thinkHandler(ctx);
   });
@@ -190,6 +209,31 @@ export async function startBot(): Promise<void> {
   // /remind — set a natural language reminder
   bot.command("remind", async (ctx) => {
     await remindHandler(ctx);
+  });
+
+  // /search — quick web search via Claude
+  bot.command("search", async (ctx) => {
+    await searchHandler(ctx);
+  });
+
+  // /note — append a quick note to today's Vault notes file
+  bot.command("note", async (ctx) => {
+    await noteHandler(ctx);
+  });
+
+  // /file — list downloads folder contents
+  bot.command("file", async (ctx) => {
+    await fileHandler(ctx);
+  });
+
+  // /tasks — show open items from tasks.md
+  bot.command("tasks", async (ctx) => {
+    await tasksHandler(ctx);
+  });
+
+  // /search-log — search chat log files
+  bot.command("search-log", async (ctx) => {
+    await searchLogHandler(ctx);
   });
 
   // Chat log — capture all inbound messages
@@ -205,6 +249,25 @@ export async function startBot(): Promise<void> {
     }
     // Voice is logged after transcription in the voice handler
     return next();
+  });
+
+  // Reaction handler — ✅ on a bot message acknowledges the related reminder
+  bot.on("message_reaction", async (ctx) => {
+    const reaction = ctx.messageReaction;
+    const newReactions = reaction?.new_reaction ?? [];
+    const hasCheckmark = newReactions.some(
+      // biome-ignore lint/suspicious/noExplicitAny: Grammy emoji union type doesn't include ✅ yet
+      (r) => r.type === "emoji" && (r.emoji as any) === "✅",
+    );
+    if (hasCheckmark && reaction?.message_id) {
+      const acked = ackReminderByMsgId(reaction.message_id);
+      if (acked) {
+        getLogger().info(
+          { messageId: reaction.message_id },
+          "Reminder acknowledged via reaction",
+        );
+      }
+    }
   });
 
   // Text message handler
@@ -272,6 +335,26 @@ export async function startBot(): Promise<void> {
       {
         command: "remind",
         description: "Set a reminder: /remind <message> in 2 hours",
+      },
+      {
+        command: "search",
+        description: "Quick web search: /search <query>",
+      },
+      {
+        command: "note",
+        description: "Append a quick note to today's Vault notes",
+      },
+      {
+        command: "file",
+        description: "List files in your downloads folder",
+      },
+      {
+        command: "tasks",
+        description: "Show open items from tasks.md",
+      },
+      {
+        command: "search_log",
+        description: "Search chat history: /search-log <term>",
       },
       {
         command: "restart",
