@@ -4,6 +4,7 @@ import { unlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { Context } from "grammy";
+import { appendChatLog } from "../../chatlog/index.js";
 import { executeClaudeQuery } from "../../claude/executor.js";
 import { parseClaudeOutput } from "../../claude/parser.js";
 import { getConfig } from "../../config.js";
@@ -111,6 +112,10 @@ export async function voiceHandler(ctx: Context): Promise<void> {
 
     // Transcribe with local Whisper
     const transcription = await transcribeAudio(wavPath);
+
+    if (transcription.text) {
+      appendChatLog("Sean [voice]", transcription.text);
+    }
 
     if (!transcription.text) {
       await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);

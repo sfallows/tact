@@ -11,6 +11,7 @@ import { existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import type { Bot } from "grammy";
+import { appendChatLog } from "../chatlog/index.js";
 import { isClaudeBusy } from "../claude/executor.js";
 import { getConfig, getWorkingDirectory } from "../config.js";
 import { getLogger } from "../logger.js";
@@ -154,6 +155,7 @@ export async function drainNotification(): Promise<boolean> {
   );
 
   try {
+    appendChatLog(row.source || "notify", row.payload);
     const chunks = chunkMessage(row.payload);
     for (const chunk of chunks) {
       await botInstance.api.sendMessage(primaryUserId, chunk);

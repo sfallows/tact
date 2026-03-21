@@ -19,6 +19,7 @@ import { bufferMessage } from "../messageBuffer.js";
 import {
   isAuthExpiredError,
   isCorruptedSessionError,
+  isSessionNotFoundError,
 } from "../sessionRecovery.js";
 
 // Heartbeat file path — written on message receive and reply (lazy init)
@@ -187,12 +188,12 @@ export async function processMessage(
       }
     };
 
-    // Heartbeat: edit status message every 45s if no recent progress update
+    // Heartbeat: edit status message every 15s if no recent progress update
     const processStart = Date.now();
     heartbeatInterval = setInterval(async () => {
-      if (Date.now() - lastProgressUpdate < 40000) return; // recent update, skip
+      if (Date.now() - lastProgressUpdate < 12000) return; // recent update, skip
       const elapsed = Math.round((Date.now() - processStart) / 1000);
-      const label = lastProgressText ? `${lastProgressText} ` : "";
+      const label = lastProgressText ? `${lastProgressText} ` : "Working ";
       try {
         await ctx.api.editMessageText(
           chatId,
@@ -203,7 +204,7 @@ export async function processMessage(
       } catch {
         // Ignore
       }
-    }, 45000);
+    }, 15000);
 
     const downloadsPath = getDownloadsPath(userDir);
 
@@ -257,9 +258,9 @@ export async function processMessage(
 
       // Restart heartbeat for retry (was cleared after first call)
       heartbeatInterval = setInterval(async () => {
-        if (Date.now() - lastProgressUpdate < 40000) return;
+        if (Date.now() - lastProgressUpdate < 12000) return;
         const elapsed = Math.round((Date.now() - processStart) / 1000);
-        const label = lastProgressText ? `${lastProgressText} ` : "";
+        const label = lastProgressText ? `${lastProgressText} ` : "Working ";
         try {
           await ctx.api.editMessageText(
             chatId,
@@ -270,7 +271,7 @@ export async function processMessage(
         } catch {
           // Ignore
         }
-      }, 45000);
+      }, 15000);
 
       result = await executeClaudeQuery({
         prompt: promptText,
@@ -291,6 +292,68 @@ export async function processMessage(
         logger.warn({ userDir }, "Cleared session after failed retry");
       }
     }
+    // Timed out or session not found — clear session and retry once with a fresh session
+    if (
+      !result.success &&
+      sessionId &&
+      (result.timedOut || isSessionNotFoundError(result.error))
+    ) {
+      const reason = result.timedOut ? "timed out" : "session not found";
+      logger.warn(
+        { sessionId, reason, error: result.error },
+        "Session unresumable — clearing and retrying fresh",
+      );
+      await saveSessionId(userDir, null);
+
+      try {
+        await ctx.api.editMessageText(
+          chatId,
+          statusMsgId,
+          "_Session reset, retrying..._",
+          { parse_mode: "Markdown" },
+        );
+      } catch {
+        // Ignore edit errors
+      }
+
+      streamedText = "";
+      lastStreamUpdate = 0;
+      streamUpdatePending = false;
+      isInToolUse = false;
+      lastProgressUpdate = Date.now();
+      lastProgressText = "";
+
+      heartbeatInterval = setInterval(async () => {
+        if (Date.now() - lastProgressUpdate < 12000) return;
+        const elapsed = Math.round((Date.now() - processStart) / 1000);
+        const label = lastProgressText ? `${lastProgressText} ` : "Working ";
+        try {
+          await ctx.api.editMessageText(
+            chatId,
+            statusMsgId,
+            `_${label}(${elapsed}s)_`,
+            { parse_mode: "Markdown" },
+          );
+        } catch {
+          // Ignore
+        }
+      }, 15000);
+
+      result = await executeClaudeQuery({
+        prompt: promptText,
+        userDir,
+        downloadsPath,
+        sessionId: null,
+        onProgress,
+        onTextChunk,
+      });
+      clearInterval(heartbeatInterval);
+      logger.info(
+        { success: result.success, newSessionId: result.sessionId },
+        "Retry after session clear",
+      );
+    }
+
     // Auth expired — notify user to use /login
     if (!result.success && isAuthExpiredError(result.error)) {
       try {

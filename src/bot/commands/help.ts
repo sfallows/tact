@@ -10,6 +10,8 @@ export async function helpHandler(ctx: Context): Promise<void> {
       `/status - Show bot and queue status\n` +
       `/restart - Restart the bot service\n` +
       `/think <question> - Extended thinking mode\n` +
+      `/cam - Capture and send quint screen\n` +
+      `/remind <msg> <time> - Set a reminder (e.g. "in 30 minutes", "at 5pm")\n` +
       `/login - Trigger Claude re-authentication\n` +
       `/login <code> - Submit auth code\n\n` +
       `*Usage:*\n` +

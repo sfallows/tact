@@ -3,8 +3,10 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Bot, type Context } from "grammy";
+import { camHandler } from "./bot/commands/cam.js";
 import { clearHandler } from "./bot/commands/clear.js";
 import { helpHandler } from "./bot/commands/help.js";
+import { remindHandler } from "./bot/commands/remind.js";
 import { restartHandler } from "./bot/commands/restart.js";
 import { startHandler } from "./bot/commands/start.js";
 import { statusHandler } from "./bot/commands/status.js";
@@ -19,13 +21,15 @@ import { processMessage } from "./bot/handlers/text.js";
 import { initMessageBuffer } from "./bot/messageBuffer.js";
 import { authMiddleware } from "./bot/middleware/auth.js";
 import { rateLimitMiddleware } from "./bot/middleware/rateLimit.js";
+import { appendChatLog } from "./chatlog/index.js";
 import { getConfig, getWorkingDirectory } from "./config.js";
 import { getLogger, initLogger } from "./logger.js";
 import {
   startNotificationPoller,
   stopNotificationPoller,
 } from "./notification/queue.js";
-import { clearUserData, saveSessionId } from "./user/setup.js";
+import { startReminderPoller, stopReminderPoller } from "./reminder/index.js";
+import { clearUserData } from "./user/setup.js";
 import { startQueuePoller, stopQueuePoller } from "./webhook/queue.js";
 import { startWebhookServer } from "./webhook/server.js";
 
@@ -178,6 +182,31 @@ export async function startBot(): Promise<void> {
     await thinkHandler(ctx);
   });
 
+  // /cam — capture the quint screen and send as a photo
+  bot.command("cam", async (ctx) => {
+    await camHandler(ctx);
+  });
+
+  // /remind — set a natural language reminder
+  bot.command("remind", async (ctx) => {
+    await remindHandler(ctx);
+  });
+
+  // Chat log — capture all inbound messages
+  bot.on("message", (ctx, next) => {
+    const msg = ctx.message;
+    if (msg?.text) {
+      appendChatLog("Sean", msg.text);
+    } else if (msg?.photo) {
+      appendChatLog("Sean", `[photo] ${msg.caption || "(no caption)"}`);
+    } else if (msg?.document) {
+      const name = msg.document.file_name || "document";
+      appendChatLog("Sean", `[document: ${name}] ${msg.caption || ""}`);
+    }
+    // Voice is logged after transcription in the voice handler
+    return next();
+  });
+
   // Text message handler
   bot.on("message:text", textHandler);
 
@@ -200,6 +229,7 @@ export async function startBot(): Promise<void> {
     logger.info({ signal }, "Received shutdown signal");
     stopQueuePoller();
     stopNotificationPoller();
+    stopReminderPoller();
     await bot.stop();
     logger.info("Bot stopped");
     process.exit(0);
@@ -217,6 +247,9 @@ export async function startBot(): Promise<void> {
   // Start notification queue poller (SQLite-backed outbound messages)
   await startNotificationPoller(bot);
 
+  // Start reminder poller (SQLite-backed, 30s check interval)
+  await startReminderPoller(bot);
+
   // Register bot commands with Telegram (shows autocomplete menu)
   try {
     await bot.api.setMyCommands([
@@ -231,6 +264,14 @@ export async function startBot(): Promise<void> {
       {
         command: "think",
         description: "Deep reasoning + peer review on a question",
+      },
+      {
+        command: "cam",
+        description: "Capture and send the current quint screen",
+      },
+      {
+        command: "remind",
+        description: "Set a reminder: /remind <message> in 2 hours",
       },
       {
         command: "restart",
@@ -249,24 +290,22 @@ export async function startBot(): Promise<void> {
     );
   }
 
-  // Startup recovery: clear poisoned sessions from unclean shutdowns
-  // Covers self-restart, OOM kill, watchdog restart, and systemd auto-restart
+  // Startup recovery: detect unclean shutdowns via heartbeat.
+  // We do NOT clear the session here — if Claude was mid-task, we keep the session
+  // so the user can resume. If the session is corrupted, the text handler's
+  // auto-recovery will detect it and retry fresh on the next message.
   try {
     const heartbeatPath = resolve(join(workingDir, ".tact", "heartbeat.json"));
     const raw = await readFile(heartbeatPath, "utf-8");
     const heartbeat = JSON.parse(raw) as { status?: string; userId?: number };
-    if (heartbeat.userId) {
-      const staleUserDir = resolve(
-        join(config.dataDir, String(heartbeat.userId)),
-      );
-      await saveSessionId(staleUserDir, null);
+    if (heartbeat.status === "processing" && heartbeat.userId) {
       logger.warn(
-        { userId: heartbeat.userId, heartbeatStatus: heartbeat.status },
-        "Cleared stale session after unclean shutdown",
+        { userId: heartbeat.userId },
+        "Unclean shutdown detected — keeping session (auto-recovery will handle corruption on next message)",
       );
     }
   } catch {
-    // No heartbeat file or parse error — fresh boot, nothing to clear
+    // No heartbeat file or parse error — fresh boot, nothing to do
   }
 
   // Start bot

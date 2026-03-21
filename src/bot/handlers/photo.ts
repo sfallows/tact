@@ -25,7 +25,13 @@ export async function photoHandler(ctx: Context): Promise<void> {
   const logger = getLogger();
   const userId = ctx.from?.id;
   const photo = ctx.message?.photo;
-  const caption = ctx.message?.caption || "Please analyze this image.";
+  const rawCaption = ctx.message?.caption || "";
+  const isBusinessCard =
+    /business.?card|contact.?card|biz.?card/i.test(rawCaption) ||
+    (!rawCaption && false); // explicit caption required for auto-detect
+  const caption = isBusinessCard
+    ? "This is a business card. Please extract all contact information from it (name, title, company, phone, email, website, address) and add it as a new contact in Google Contacts using the contacts MCP tool. Confirm what was saved."
+    : rawCaption || "Please analyze this image.";
 
   if (!userId || !photo || photo.length === 0) {
     return;

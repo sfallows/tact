@@ -1,5 +1,6 @@
 import http from "node:http";
 import type { Context } from "grammy";
+import { appendChatLog } from "../chatlog/index.js";
 import { TELEGRAM_MAX_LENGTH } from "../constants.js";
 
 /**
@@ -108,6 +109,8 @@ export async function sendChunkedResponse(
   if (!text || !text.trim()) {
     return;
   }
+
+  appendChatLog("Claude", text);
 
   const chunks = chunkMessage(text).filter((c) => c.trim().length > 0);
 

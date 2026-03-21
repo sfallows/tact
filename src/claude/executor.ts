@@ -46,8 +46,11 @@ export async function executeClaudeQuery(
   const logger = getLogger();
   const config = getConfig();
 
-  // Inactivity timeout: kill process if no stdout/stderr data for this long (default 10 min)
-  const inactivityTimeoutMs = (config.claudeTimeoutSeconds ?? 600) * 1000;
+  // Inactivity timeout: kill process if no stdout/stderr data for this long.
+  // Set claudeTimeoutSeconds to 0 to disable (runs until process exits naturally).
+  const configuredSeconds = config.claudeTimeoutSeconds ?? 600;
+  const inactivityTimeoutMs =
+    configuredSeconds === 0 ? 0 : configuredSeconds * 1000;
 
   // Append downloads path info to prompt if provided
   const fullPrompt = downloadsPath
@@ -100,10 +103,11 @@ export async function executeClaudeQuery(
     let lastAssistantText = ""; // Track last text response for fallback
     let killed = false;
 
-    // --- Inactivity timeout ---
+    // --- Inactivity timeout (disabled when inactivityTimeoutMs === 0) ---
     let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
 
     const resetInactivityTimer = () => {
+      if (inactivityTimeoutMs === 0) return; // disabled
       if (inactivityTimer) clearTimeout(inactivityTimer);
       inactivityTimer = setTimeout(() => {
         logger.warn(
@@ -127,7 +131,7 @@ export async function executeClaudeQuery(
       }, inactivityTimeoutMs);
     };
 
-    // Start the timer
+    // Start the timer (no-op when disabled)
     resetInactivityTimer();
 
     proc.stdout.on("data", (data: Buffer) => {
